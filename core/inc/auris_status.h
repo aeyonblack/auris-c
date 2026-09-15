@@ -9,6 +9,7 @@ typedef enum {
   AURIS_ERROR_CAPACITY = -4
 } auris_status_t;
 
+// Todo - remove this status class
 const char *auris_status_string(auris_status_t status);
 
 #endif

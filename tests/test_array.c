@@ -40,6 +40,23 @@ int main(void) {
     return EXIT_FAILURE;
   }
 
+  /* Pair distances alone cannot detect a mirrored or rotated mapping. */
+  const float expected_xy[4][2] = {{-0.02285F, 0.02285F},
+                                   {0.02285F, 0.02285F},
+                                   {0.02285F, -0.02285F},
+                                   {-0.02285F, -0.02285F}};
+  for (size_t i = 0U; i < 4U; ++i) {
+    if (!expect_true(array->capture_channels[i] == i + 1U, "raw channel") ||
+        !expect_near(array->positions[i].x_m, expected_xy[i][0], 0.000001F,
+                     "microphone X") ||
+        !expect_near(array->positions[i].y_m, expected_xy[i][1], 0.000001F,
+                     "microphone Y") ||
+        !expect_near(array->positions[i].z_m, 0.0F, 0.000001F,
+                     "microphone Z")) {
+      return EXIT_FAILURE;
+    }
+  }
+
   if (!expect_true(auris_array_pair_count(4U) == 6U,
                    "four microphones must produce six pairs")) {
     return EXIT_FAILURE;
@@ -75,12 +92,11 @@ int main(void) {
     return EXIT_FAILURE;
   }
 
-  if (!expect_near(minimum_spacing_m, 0.0452548F, 0.000001F,
-                   "minimum spacing")) {
+  if (!expect_near(minimum_spacing_m, 0.0457F, 0.000001F, "minimum spacing")) {
     return EXIT_FAILURE;
   }
 
-  if (!expect_near(aperture_m, 0.064F, 0.000001F, "aperture")) {
+  if (!expect_near(aperture_m, 0.06462956F, 0.000001F, "aperture")) {
     return EXIT_FAILURE;
   }
 
@@ -89,7 +105,7 @@ int main(void) {
     return EXIT_FAILURE;
   }
 
-  if (!expect_near(aliasing_hz, 3789.0F, 2.0F, "alias estimate")) {
+  if (!expect_near(aliasing_hz, 3752.735F, 0.1F, "alias estimate")) {
     return EXIT_FAILURE;
   }
 
@@ -99,7 +115,7 @@ int main(void) {
     return EXIT_FAILURE;
   }
 
-  if (!expect_near(diameter_delay_samples, 2.98542F, 0.0001F,
+  if (!expect_near(diameter_delay_samples, 3.01479F, 0.0001F,
                    "diameter delay at 16 kHz")) {
     return EXIT_FAILURE;
   }
