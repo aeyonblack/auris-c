@@ -1,6 +1,5 @@
 #include "auris_array.h"
 #include "auris_status.h"
-
 #include <math.h>
 #include <stddef.h>
 
