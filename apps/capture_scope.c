@@ -1,4 +1,5 @@
 #include "auris_alsa.h"
+#include "auris_analysis.h"
 #include "auris_array_configs.h"
 #include <signal.h>
 #include <stdio.h>
@@ -41,19 +42,56 @@ int main(int argc, char **argv) {
   auris_audio_block_t block;
   int result = EXIT_FAILURE;
 
-  if (printf("AURIS1 %u %zu %u\n", AURIS_ALSA_RATE, array->microphone_count,
-             AURIS_AUDIO_FRAMES) < 0) {
+  auris_framer_t framer;
+  auris_framer_reset(&framer);
+  auris_preprocess_t prep;
+  auris_preprocess_init(&prep);
+  auris_analysis_frame_t analysis;
+  auris_analysis_frame_t raw_analysis;
+  size_t analysis_count = 0U;
+
+  if (printf("AURIS2 %u %zu %u\n", AURIS_ALSA_RATE, array->microphone_count,
+             AURIS_ANALYSIS_SIZE) < 0) {
     goto done;
   }
   while (keep_running) {
     if (source.read(source.context, &block) != AURIS_OK) {
       goto done;
     }
-    for (size_t c = 0U; c < block.channels; ++c) {
-      if (fwrite(block.samples[c], sizeof(float), block.frames, stdout) !=
-          block.frames) {
+    bool ready = false;
+    if (auris_framer_push(&framer, &block, &analysis, &ready) != AURIS_OK) {
+      fprintf(stderr, "analysis input is invalid or discontinuous\n");
+      goto done;
+    }
+
+    if (!ready) {
+      continue;
+    }
+
+    raw_analysis = analysis;
+    if (auris_preprocess_apply(&prep, &analysis) != AURIS_OK) {
+      goto done;
+    }
+
+    for (size_t c = 0U; c < analysis.channels; ++c) {
+      if (fwrite(raw_analysis.samples[c], sizeof(float), AURIS_ANALYSIS_SIZE,
+                 stdout) != AURIS_ANALYSIS_SIZE) {
         goto done;
       }
+    }
+    for (size_t c = 0U; c < analysis.channels; ++c) {
+      if (fwrite(analysis.samples[c], sizeof(float), AURIS_ANALYSIS_SIZE,
+                 stdout) != AURIS_ANALYSIS_SIZE) {
+        goto done;
+      }
+    }
+    if (fflush(stdout) == EOF) {
+      goto done;
+    }
+
+    ++analysis_count;
+    if (analysis_count % 64U == 0U) {
+      fprintf(stderr, "analysis frames: %zu\n", analysis_count);
     }
     if (fflush(stdout) == EOF) {
       goto done;
