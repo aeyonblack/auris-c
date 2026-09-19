@@ -3,6 +3,8 @@ add_library(
   STATIC
     src/auris_array.c
     src/auris_status.c
+    src/auris_framer.c
+    src/auris_preprocess.c
 )
 
 target_include_directories(
