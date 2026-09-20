@@ -5,6 +5,13 @@ add_executable(analysis_demo analysis_demo.c)
 add_executable(gcc_scope gcc_scope.c)
 add_executable(srp_scope srp_scope.c)
 add_executable(heatmap_scope heatmap_scope.c)
+add_executable(camera_scope camera_scope.c)
+
+target_link_libraries(
+  camera_scope
+  PRIVATE
+    auris_camera
+)
 
 target_link_libraries(
   heatmap_scope
@@ -56,6 +63,7 @@ target_link_libraries(
 target_compile_definitions(gcc_scope PRIVATE _POSIX_C_SOURCE=200809L)
 target_compile_definitions(srp_scope PRIVATE _POSIX_C_SOURCE=200809L)
 target_compile_definitions(heatmap_scope PRIVATE _POSIX_C_SOURCE=200809L)
+target_compile_definitions(camera_scope PRIVATE _POSIX_C_SOURCE=200809L)
 
 auris_set_warnings(auris_lesson_00)
 auris_enable_sanitizers(auris_lesson_00)
@@ -77,3 +85,6 @@ auris_enable_sanitizers(srp_scope)
 
 auris_set_warnings(heatmap_scope)
 auris_enable_sanitizers(heatmap_scope)
+
+auris_set_warnings(camera_scope)
+auris_enable_sanitizers(camera_scope)
