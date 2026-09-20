@@ -32,5 +32,7 @@ void auris_srp_destroy(auris_srp_t *state);
 auris_status_t auris_srp_apply(auris_srp_t *state, auris_fft_t *fft,
                                const auris_spectrum_t *spectrum,
                                auris_srp_result_t *out);
+auris_status_t auris_srp_set_smoothing(auris_srp_t *s, float seconds);
+void auris_srp_reset(auris_srp_t *state);
 
 #endif

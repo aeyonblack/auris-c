@@ -1,6 +1,10 @@
 #include "auris_srp.h"
+#include "auris_analysis.h"
+#include "auris_spectrum.h"
+#include "auris_status.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,10 +22,30 @@ struct auris_srp {
   auris_vec3f_t directions[AURIS_SRP_MAX_DIRECTIONS];
   lookup_t *table;
   float curves[AURIS_SRP_MAX_PAIRS][AURIS_GCC_SIZE];
+  float scratch[AURIS_GCC_SIZE];
+  float smoothing_alpha;
+  uint64_t next_frame;
+  bool history_ready;
 };
 
 static float dot(auris_vec3f_t a, auris_vec3f_t b) {
   return a.x_m * b.x_m + a.y_m * b.y_m + a.z_m * b.z_m;
+}
+
+void auris_srp_reset(auris_srp_t *s) {
+  if (s != NULL) {
+    s->history_ready = false;
+  }
+}
+
+auris_status_t auris_srp_set_smoothing(auris_srp_t *s, float seconds) {
+  if (s == NULL || !isfinite(seconds) || seconds < 0.0f || seconds > 60.0f) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  const float dt = (float)AURIS_ANALYSIS_HOP / (float)s->sample_rate;
+  s->smoothing_alpha = seconds == 0.0f ? 1.0f : -expm1f(-dt / seconds);
+  auris_srp_reset(s);
+  return AURIS_OK;
 }
 
 void auris_srp_destroy(auris_srp_t *state) {
@@ -50,6 +74,7 @@ auris_srp_t *auris_srp_create(const auris_array_t *array,
     return NULL;
   }
   s->sample_rate = sample_rate;
+  s->smoothing_alpha = 1.0f;
   s->channels = array->microphone_count;
   s->count = count;
   memcpy(s->directions, directions, count * sizeof(*directions));
@@ -107,16 +132,30 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
   out->directions = s->count;
   out->pairs = s->pair_count;
   out->first_frame = spectrum->first_frame;
+  if (s->history_ready && spectrum->first_frame != s->next_frame) {
+    auris_srp_reset(s);
+  }
   bool all_valid = true;
   for (size_t p = 0U; p < s->pair_count; ++p) {
     bool valid = false;
     if (auris_gcc_phat_curve(fft, spectrum, s->pairs[p].first,
-                             s->pairs[p].second, s->curves[p],
+                             s->pairs[p].second, s->scratch,
                              &valid) != AURIS_OK) {
+      auris_srp_reset(s);
       return AURIS_ERROR_INTERNAL;
+    }
+    for (size_t n = 0U; n < AURIS_GCC_SIZE; ++n) {
+      if (!s->history_ready || s->smoothing_alpha == 1.0f) {
+        s->curves[p][n] = s->scratch[n];
+      } else {
+        s->curves[p][n] +=
+            s->smoothing_alpha * (s->scratch[n] - s->curves[p][n]);
+      }
     }
     all_valid = all_valid && valid;
   }
+  s->history_ready = all_valid;
+  s->next_frame = spectrum->first_frame + (uint64_t)AURIS_ANALYSIS_HOP;
   float best = -INFINITY;
   float minimum = INFINITY;
   for (size_t q = 0U; q < s->count; ++q) {
