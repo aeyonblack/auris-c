@@ -14,6 +14,9 @@ struct auris_image {
   auris_image_rect_t content;
   axis_t *xmap, *ymap;
   uint16_t *linear;
+  float black, base_gain[3], gain[3], base_exposure, exposure;
+  float matrix[3][3];
+  bool auto_white_balance, auto_exposure, adapted;
   uint16_t correction[3][256];
   uint8_t encoding[4096];
 };
@@ -30,6 +33,16 @@ static void axis_init(axis_t *map, uint32_t count, uint32_t source) {
     const uint32_t lo = (uint32_t)p;
     map[i] = (axis_t){lo, lo + (lo + 1U < source ? 1U : 0U), p - (float)lo};
   }
+}
+
+static void correction_init(auris_image_t *s) {
+  for (size_t k = 0U; k < 3U; ++k)
+    for (size_t i = 0U; i < 256U; ++i) {
+      const float value = ((float)i - s->black) / (255.0f - s->black) *
+                          s->gain[k] * s->exposure;
+      s->correction[k][i] =
+          (uint16_t)(4095.0f * clamp(value, 16.0f) + 0.5f);
+    }
 }
 
 void auris_image_close(auris_image_t *s) {
@@ -53,6 +66,15 @@ int auris_image_open(auris_image_t **out, const auris_image_config_t *c) {
   for (size_t k = 0U; k < 3U; ++k)
     if (!isfinite(c->gain[k]) || c->gain[k] <= 0.0f || c->gain[k] > 16.0f)
       return -EINVAL;
+  bool zero_matrix = true;
+  for (size_t row = 0U; row < 3U; ++row)
+    for (size_t column = 0U; column < 3U; ++column) {
+      const float value = c->colour_matrix[row][column];
+      if (!isfinite(value) || fabsf(value) > 8.0f)
+        return -EINVAL;
+      if (value != 0.0f)
+        zero_matrix = false;
+    }
   auris_image_t *s = calloc(1U, sizeof(*s));
   if (s == NULL)
     return -ENOMEM;
@@ -80,13 +102,19 @@ int auris_image_open(auris_image_t **out, const auris_image_config_t *c) {
   }
   axis_init(s->xmap, w, s->sw);
   axis_init(s->ymap, h, s->sh);
-  const float exposure = exp2f(c->exposure_ev);
-  for (size_t k = 0U; k < 3U; ++k)
-    for (size_t i = 0U; i < 256U; ++i) {
-      const float value =
-          ((float)i - c->black) / (255.0f - c->black) * c->gain[k] * exposure;
-      s->correction[k][i] = (uint16_t)(4095.0f * clamp(value, 1.0f) + 0.5f);
-    }
+  s->black = c->black;
+  s->base_exposure = exp2f(c->exposure_ev);
+  s->exposure = s->base_exposure;
+  s->auto_white_balance = c->auto_white_balance;
+  s->auto_exposure = c->auto_exposure;
+  for (size_t k = 0U; k < 3U; ++k) {
+    s->base_gain[k] = c->gain[k];
+    s->gain[k] = c->gain[k];
+    for (size_t j = 0U; j < 3U; ++j)
+      s->matrix[k][j] = zero_matrix ? (k == j ? 1.0f : 0.0f)
+                                    : c->colour_matrix[k][j];
+  }
+  correction_init(s);
   for (size_t i = 0U; i < 4096U; ++i)
     s->encoding[i] =
         (uint8_t)(255.0f * powf((float)i / 4095.0f, 1.0f / c->gamma) + 0.5f);
@@ -98,11 +126,103 @@ const auris_image_rect_t *auris_image_content(const auris_image_t *s) {
   return s == NULL ? NULL : &s->content;
 }
 
+int auris_image_get_adjustment(const auris_image_t *s,
+                               auris_image_adjustment_t *adjustment) {
+  if (s == NULL || adjustment == NULL)
+    return -EINVAL;
+  memcpy(adjustment->gain, s->gain, sizeof(adjustment->gain));
+  adjustment->exposure = s->exposure;
+  return 0;
+}
+
 static bool fits(uint32_t w, uint32_t h, size_t stride, size_t bytes,
                  size_t bpp) {
   const size_t row = (size_t)w * bpp;
   return stride >= row && bytes >= row &&
          (size_t)(h - 1U) <= (bytes - row) / stride;
+}
+
+/* Estimate scene colour and brightness from a sparse set of complete RGGB
+   cells. This is O(source pixels / 256), rather than another full-frame pass. */
+static void adapt(auris_image_t *s, const auris_bayer8_t *in) {
+  if (!s->auto_white_balance && !s->auto_exposure)
+    return;
+  uint64_t sum[3] = {0U, 0U, 0U};
+  uint32_t histogram[256] = {0U};
+  uint64_t count = 0U;
+  uint32_t step = s->sw / 96U;
+  if (step < 2U)
+    step = 2U;
+  if ((step & 1U) != 0U)
+    ++step;
+  for (uint32_t y = 0U; y + 1U < s->sh; y += step) {
+    const uint8_t *top = in->data + (size_t)y * in->stride;
+    const uint8_t *bottom = top + in->stride;
+    for (uint32_t x = 0U; x + 1U < s->sw; x += step) {
+      const unsigned int r = top[x];
+      const unsigned int g = ((unsigned int)top[x + 1U] + bottom[x] + 1U) / 2U;
+      const unsigned int b = bottom[x + 1U];
+      ++histogram[g];
+      if (r < 250U && g < 250U && b < 250U &&
+          (float)r > s->black && (float)g > s->black &&
+          (float)b > s->black) {
+        sum[0] += r;
+        sum[1] += g;
+        sum[2] += b;
+        ++count;
+      }
+    }
+  }
+  if (count == 0U)
+    return;
+
+  float target_gain[3];
+  memcpy(target_gain, s->base_gain, sizeof(target_gain));
+  if (s->auto_white_balance) {
+    const float green = (float)sum[1] / (float)count - s->black;
+    for (size_t k = 0U; k < 3U; k += 2U) {
+      const float channel = (float)sum[k] / (float)count - s->black;
+      target_gain[k] *= clamp(green / fmaxf(channel, 1.0f), 4.0f);
+      if (target_gain[k] < 0.25f * s->base_gain[k])
+        target_gain[k] = 0.25f * s->base_gain[k];
+    }
+  }
+
+  float target_exposure = s->base_exposure;
+  if (s->auto_exposure) {
+    uint64_t samples = 0U;
+    uint64_t green_sum = 0U;
+    for (size_t i = 0U; i < 256U; ++i) {
+      samples += histogram[i];
+      if ((float)i > s->black)
+        green_sum += (uint64_t)((float)i - s->black) * histogram[i];
+    }
+    uint64_t cumulative = 0U;
+    size_t percentile = 255U;
+    for (size_t i = 0U; i < 256U; ++i) {
+      cumulative += histogram[i];
+      if (cumulative * 100U >= samples * 95U) {
+        percentile = i;
+        break;
+      }
+    }
+    const float green = (float)green_sum / (float)samples /
+                        (255.0f - s->black) * s->base_gain[1];
+    const float highlight = ((float)percentile - s->black) /
+                            (255.0f - s->black) * s->base_gain[1];
+    target_exposure = s->base_exposure * 0.18f / fmaxf(green, 1.0f / 255.0f);
+    target_exposure = fminf(target_exposure,
+                            s->base_exposure * 0.90f /
+                                fmaxf(highlight, 1.0f / 255.0f));
+    target_exposure = fmaxf(0.125f, fminf(target_exposure, 16.0f));
+  }
+
+  const float alpha = s->adapted ? 0.12f : 1.0f;
+  for (size_t k = 0U; k < 3U; ++k)
+    s->gain[k] += alpha * (target_gain[k] - s->gain[k]);
+  s->exposure += alpha * (target_exposure - s->exposure);
+  s->adapted = true;
+  correction_init(s);
 }
 
 static void demosaic(auris_image_t *s, const auris_bayer8_t *in) {
@@ -150,6 +270,7 @@ int auris_image_render(auris_image_t *s, const auris_bayer8_t *in,
       !fits(in->width, in->height, in->stride, in->bytes, 1U) ||
       !fits(out->width, out->height, out->stride, out->bytes, 3U))
     return -EINVAL;
+  adapt(s, in);
   demosaic(s, in);
   for (uint32_t y = 0U; y < out->height; ++y)
     memset(out->data + (size_t)y * out->stride, 0, (size_t)out->width * 3U);
@@ -161,12 +282,18 @@ int auris_image_render(auris_image_t *s, const auris_bayer8_t *in,
                    (size_t)s->content.x * 3U;
     for (uint32_t x = 0U; x < s->content.width; ++x) {
       const axis_t u = s->xmap[x];
+      float rgb[3];
       for (size_t k = 0U; k < 3U; ++k) {
         const size_t l = (size_t)u.lo * 3U + k, r = (size_t)u.hi * 3U + k;
         const float t = mix((float)top[l], (float)top[r], u.weight);
         const float b = mix((float)bottom[l], (float)bottom[r], u.weight);
-        const size_t level =
-            (size_t)(clamp(mix(t, b, v.weight), 4095.0f) + 0.5f);
+        rgb[k] = mix(t, b, v.weight);
+      }
+      for (size_t k = 0U; k < 3U; ++k) {
+        const float corrected = s->matrix[k][0] * rgb[0] +
+                                s->matrix[k][1] * rgb[1] +
+                                s->matrix[k][2] * rgb[2];
+        const size_t level = (size_t)(clamp(corrected, 4095.0f) + 0.5f);
         *dst++ = s->encoding[level];
       }
     }

@@ -9,7 +9,9 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "line %d: %s\n", __LINE__, #x); exit(EXIT_FAILURE); } } while (0)
 
 static auris_image_config_t config(uint32_t sw, uint32_t sh, uint32_t w, uint32_t h) {
-  return (auris_image_config_t){sw, sh, w, h, 0.0f, {1.0f,1.0f,1.0f}, 0.0f, 1.0f};
+  return (auris_image_config_t){.source_width=sw, .source_height=sh,
+      .width=w, .height=h, .black=0.0f, .gain={1.0f,1.0f,1.0f},
+      .exposure_ev=0.0f, .gamma=1.0f};
 }
 
 static void flat(void) {
@@ -91,10 +93,59 @@ static void tone_and_validation(void) {
   c.gamma=NAN; CHECK(auris_image_open(&s,&c)==-EINVAL && s==NULL);
   c.gamma=1.0f; c.gain[1]=INFINITY; CHECK(auris_image_open(&s,&c)==-EINVAL);
   c.gain[1]=1.0f; c.width=0U; CHECK(auris_image_open(&s,&c)==-EINVAL);
+  c.width=2U; c.colour_matrix[0][0]=NAN;
+  CHECK(auris_image_open(&s,&c)==-EINVAL);
   CHECK(auris_image_open(NULL,&c)==-EINVAL);
   CHECK(auris_image_content(NULL)==NULL);
   CHECK(auris_image_render(NULL,&in,&out)==-EINVAL);
   auris_image_close(NULL);
+}
+
+static void colour(void) {
+  const uint8_t raw[4]={20U,80U,80U,200U};
+  uint8_t rgb[12];
+  auris_bayer8_t in={raw,2U,2U,2U,sizeof(raw)};
+  auris_rgb24_t out={rgb,2U,2U,6U,sizeof(rgb)};
+  auris_image_config_t c=config(2U,2U,2U,2U);
+  c.colour_matrix[0][2]=1.0f;
+  c.colour_matrix[1][1]=1.0f;
+  c.colour_matrix[2][0]=1.0f;
+  auris_image_t *s=NULL;
+  CHECK(auris_image_open(&s,&c)==0);
+  CHECK(auris_image_render(s,&in,&out)==0);
+  for(size_t pixel=0U;pixel<4U;++pixel) {
+    CHECK(rgb[pixel*3U]==200U);
+    CHECK(rgb[pixel*3U+1U]==80U);
+    CHECK(rgb[pixel*3U+2U]==20U);
+  }
+  auris_image_close(s);
+
+  c=config(2U,2U,2U,2U);
+  c.auto_white_balance=true;
+  s=NULL;
+  CHECK(auris_image_open(&s,&c)==0);
+  CHECK(auris_image_render(s,&in,&out)==0);
+  auris_image_adjustment_t adjustment;
+  CHECK(auris_image_get_adjustment(s,&adjustment)==0);
+  CHECK(fabsf(adjustment.gain[0]-4.0f)<0.001f);
+  CHECK(fabsf(adjustment.gain[1]-1.0f)<0.001f);
+  CHECK(fabsf(adjustment.gain[2]-0.4f)<0.001f);
+  for(size_t k=0U;k<12U;++k) CHECK(abs((int)rgb[k]-80)<=1);
+  auris_image_close(s);
+
+  c=config(2U,2U,2U,2U);
+  c.auto_exposure=true;
+  const uint8_t grey[4]={64U,64U,64U,64U};
+  in.data=grey;
+  s=NULL;
+  CHECK(auris_image_open(&s,&c)==0);
+  CHECK(auris_image_render(s,&in,&out)==0);
+  CHECK(auris_image_get_adjustment(s,&adjustment)==0);
+  CHECK(fabsf(adjustment.exposure-0.7171875f)<0.001f);
+  for(size_t k=0U;k<12U;++k) CHECK(abs((int)rgb[k]-46)<=1);
+  CHECK(auris_image_get_adjustment(NULL,&adjustment)==-EINVAL);
+  CHECK(auris_image_get_adjustment(s,NULL)==-EINVAL);
+  auris_image_close(s);
 }
 
 static void layouts(void) {
@@ -111,7 +162,7 @@ static void layouts(void) {
 }
 
 int main(void) {
-  flat(); interpolation(); tone_and_validation(); layouts();
+  flat(); interpolation(); tone_and_validation(); colour(); layouts();
   puts("Image checks passed"); return EXIT_SUCCESS;
 }
 #else

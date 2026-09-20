@@ -12,6 +12,7 @@ target_link_libraries(
   PRIVATE
     auris_camera
     auris_image
+    auris_output
 )
 
 target_link_libraries(
@@ -91,9 +92,15 @@ auris_set_warnings(camera_scope)
 auris_enable_sanitizers(camera_scope)
 
 find_package(Threads REQUIRED)
+add_library(auris_calibration_session STATIC imager_calibration.c)
+target_include_directories(auris_calibration_session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(auris_calibration_session PUBLIC auris_config auris_overlay)
+auris_set_warnings(auris_calibration_session)
+auris_enable_sanitizers(auris_calibration_session)
+
 add_executable(imager_scope imager_scope.c)
 target_link_libraries(imager_scope PRIVATE auris_audio auris_config
-  auris_camera auris_overlay Threads::Threads)
+  auris_camera auris_calibration_session auris_output Threads::Threads)
 target_compile_definitions(imager_scope PRIVATE _POSIX_C_SOURCE=200809L)
 auris_set_warnings(imager_scope)
 auris_enable_sanitizers(imager_scope)

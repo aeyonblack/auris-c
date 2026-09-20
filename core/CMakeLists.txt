@@ -10,6 +10,8 @@ add_library(
     src/auris_view.c
     src/auris_activity.c
     src/auris_projection.c
+    src/auris_calibration.c
+    src/auris_timeline.c
 )
 
 find_package(PkgConfig REQUIRED)
