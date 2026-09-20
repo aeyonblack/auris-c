@@ -188,6 +188,10 @@ static int select_display(display_t *s, const char *path, uint32_t requested) {
 }
 int auris_output_open_display(auris_output_t **out,uint32_t w,uint32_t h,
                               const auris_display_config_t *config) {
+  return auris_output_open_display_info(out,w,h,config,NULL);
+}
+int auris_output_open_display_info(auris_output_t **out,uint32_t w,uint32_t h,
+                              const auris_display_config_t *config,auris_display_info_t *info) {
   if (!out || *out || !config || config->rotation>270U || config->rotation%90U ||
       !w || !h || w>4096U || h>4096U) return -EINVAL;
   display_t *s=calloc(1U,sizeof(*s));
@@ -214,6 +218,7 @@ int auris_output_open_display(auris_output_t **out,uint32_t w,uint32_t h,
   fprintf(stderr,"display: connector %u, preferred mode %ux%u, rotation %u, XRGB8888\n",
           s->connector,s->mode.hdisplay,s->mode.vdisplay,s->rotation);
   const auris_output_backend_t backend={start,present,close_display};
+  if (info) *info=(auris_display_info_t){s->mode.hdisplay,s->mode.vdisplay,s->rotation};
   return auris_output_open_backend(out,w,h,s,&backend);
 fail:
   close_display(s); return err;

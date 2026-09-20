@@ -9,6 +9,7 @@
 struct auris_outputs {
   auris_output_t *sink[2];
   int failed[2];
+  auris_display_info_t display;
 };
 static const char *const names[2]={"stream","display"};
 int auris_outputs_option(auris_outputs_config_t *c,int argc,char **argv,int *index) {
@@ -47,7 +48,7 @@ int auris_outputs_open(auris_outputs_t **out,const auris_outputs_config_t *c,
   if (stream) s->failed[0]=auris_output_open_jpeg_stream(&s->sink[0],fd,w,h,80U);
   if (c->display) {
     const auris_display_config_t display={c->drm_device,c->connector,c->rotation};
-    s->failed[1]=auris_output_open_display(&s->sink[1],w,h,&display);
+    s->failed[1]=auris_output_open_display_info(&s->sink[1],w,h,&display,&s->display);
   }
   for (size_t i=0U;i<2U;++i)
     if (s->failed[i]<0) fprintf(stderr,"%s output unavailable: %s\n",names[i],strerror(-s->failed[i]));
@@ -107,4 +108,8 @@ void auris_outputs_close(auris_outputs_t *s) {
     auris_output_close(s->sink[i]);
   }
   free(s);
+}
+bool auris_outputs_display_info(const auris_outputs_t *s,auris_display_info_t *info) {
+  if (!s || !info || !s->sink[1] || s->failed[1]) return false;
+  *info=s->display; return true;
 }

@@ -1,6 +1,7 @@
 #ifndef AURIS_OUTPUTS_H
 #define AURIS_OUTPUTS_H
 #include "auris_output.h"
+#include "auris_display.h"
 typedef struct {
   bool stream, display, explicit_selection;
   const char *drm_device;
@@ -20,5 +21,6 @@ int auris_outputs_error(auris_outputs_t *out);
 int auris_outputs_flush(auris_outputs_t *out, unsigned int timeout_ms);
 /* Stream metrics when selected; otherwise display conversion/flip metrics. */
 void auris_outputs_stats(const auris_outputs_t *out, auris_output_stats_t *stats);
+bool auris_outputs_display_info(const auris_outputs_t *out,auris_display_info_t *info);
 void auris_outputs_close(auris_outputs_t *out);
 #endif

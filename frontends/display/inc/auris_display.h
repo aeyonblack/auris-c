@@ -6,6 +6,10 @@ typedef struct {
   uint32_t connector; /* 0: first connected connector. */
   unsigned int rotation; /* clockwise degrees: 0, 90, 180, 270 */
 } auris_display_config_t;
+typedef struct { uint32_t width,height; unsigned int rotation; } auris_display_info_t;
+int auris_output_open_display_info(auris_output_t **out,uint32_t width,uint32_t height,
+                                   const auris_display_config_t *config,
+                                   auris_display_info_t *info);
 int auris_output_open_display(auris_output_t **out, uint32_t width,
                               uint32_t height,
                               const auris_display_config_t *config);
