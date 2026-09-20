@@ -1,4 +1,5 @@
 #include "auris_camera.h"
+#include "auris_image.h"
 #include <errno.h>
 #include <linux/videodev2.h>
 #include <signal.h>
@@ -10,22 +11,6 @@ static volatile sig_atomic_t running = 1;
 static void stop(int signal_number) {
   (void)signal_number;
   running = 0;
-}
-
-/* Diagnostic colour samples: one RGGB cell per 4x4 sensor region.
-   No demosaicing filter, white balance, gamma, or ISP correction. */
-static void preview_rgb(const auris_camera_format_t *f, const uint8_t *raw,
-                        uint8_t *rgb) {
-  for (uint32_t y = 0U; y < f->height / 4U; ++y) {
-    const uint8_t *a = raw + (size_t)(4U * y) * f->stride;
-    const uint8_t *b = a + f->stride;
-    for (uint32_t x = 0U; x < f->width / 4U; ++x) {
-      const uint32_t k = 4U * x;
-      *rgb++ = a[k];
-      *rgb++ = (uint8_t)(((unsigned int)a[k + 1U] + b[k]) / 2U);
-      *rgb++ = b[k + 1U];
-    }
-  }
 }
 
 int main(int argc, char **argv) {
@@ -57,6 +42,7 @@ int main(int argc, char **argv) {
       .height = 1232U,
       .ti_5_10_packed = true};
   auris_camera_t *camera = NULL;
+  auris_image_t *image = NULL;
   uint8_t *rgb = NULL;
   int result = EXIT_FAILURE;
   int err = auris_camera_open(&camera, &config);
@@ -65,15 +51,35 @@ int main(int argc, char **argv) {
     goto done;
   }
   const auris_camera_format_t *f = auris_camera_format(camera);
-  const size_t bytes = (size_t)(f->width / 4U) * (f->height / 4U) * 3U;
+  const auris_image_config_t processing = {
+      .source_width = f->width,
+      .source_height = f->height,
+      .width = 640U,
+      .height = 360U,
+      .black = 0.0f,
+      .gain = {1.0f, 1.0f, 1.0f},
+      .exposure_ev = 0.0f,
+      .gamma = 2.2f};
+  err = auris_image_open(&image, &processing);
+  if (err < 0) {
+    fprintf(stderr, "image open: %s\n", strerror(-err));
+    goto done;
+  }
+  const size_t bytes =
+      (size_t)processing.width * processing.height * 3U;
   rgb = malloc(bytes);
   if (rgb == NULL)
     goto done;
+  auris_rgb24_t output = {rgb, processing.width, processing.height,
+                          (size_t)processing.width * 3U, bytes};
+  const auris_image_rect_t *rect = auris_image_content(image);
+  fprintf(stderr, "RGB %ux%u, content %ux%u at (%u,%u)\n", output.width,
+          output.height, rect->width, rect->height, rect->x, rect->y);
   fprintf(stderr,
           "RGGB %ux%u: reported stride %u, used stride %u, image %u bytes\n",
           f->width, f->height, f->reported_stride, f->stride, f->sizeimage);
   (void)setvbuf(stdout, NULL, _IONBF, 0);
-  if (printf("AURISCAM1 %u %u\n", f->width / 4U, f->height / 4U) < 0)
+  if (printf("AURISCAM1 %u %u\n", output.width, output.height) < 0)
     goto done;
   err = auris_camera_start(camera);
   if (err < 0) {
@@ -105,8 +111,15 @@ int main(int argc, char **argv) {
     }
     previous = frame.sequence;
     const bool send = frames % 6U == 0U;
-    if (send)
-      preview_rgb(f, frame.data, rgb);
+    if (send) {
+      const auris_bayer8_t input = {frame.data, f->width, f->height,
+                                    f->stride, frame.bytes};
+      err = auris_image_render(image, &input, &output);
+      if (err < 0) {
+        fprintf(stderr, "image render: %s\n", strerror(-err));
+        goto done;
+      }
+    }
     err = auris_camera_release(camera);
     if (err < 0) {
       fprintf(stderr, "camera release: %s\n", strerror(-err));
@@ -133,6 +146,7 @@ int main(int argc, char **argv) {
   result = EXIT_SUCCESS;
 done:
   auris_camera_close(camera);
+  auris_image_close(image);
   free(rgb);
   return running ? result : EXIT_SUCCESS;
 }

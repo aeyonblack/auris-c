@@ -1,0 +1,5 @@
+add_library(auris_image STATIC src/auris_image.c)
+target_include_directories(auris_image PUBLIC inc)
+target_link_libraries(auris_image PUBLIC m)
+auris_set_warnings(auris_image)
+auris_enable_sanitizers(auris_image)

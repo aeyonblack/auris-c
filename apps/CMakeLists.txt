@@ -11,6 +11,7 @@ target_link_libraries(
   camera_scope
   PRIVATE
     auris_camera
+    auris_image
 )
 
 target_link_libraries(
