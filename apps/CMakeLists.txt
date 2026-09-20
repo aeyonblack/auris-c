@@ -2,6 +2,14 @@ add_executable(auris_lesson_00 lesson00.c)
 add_executable(auris_array_info array_info.c)
 add_executable(capture_scope capture_scope.c)
 add_executable(analysis_demo analysis_demo.c)
+add_executable(gcc_scope gcc_scope.c)
+
+target_link_libraries(
+  gcc_scope
+  PRIVATE
+   auris_audio
+   auris_config
+)
 
 target_link_libraries(
   auris_lesson_00
@@ -29,6 +37,8 @@ target_link_libraries(
     auris_audio
 )
 
+target_compile_definitions(gcc_scope PRIVATE _POSIX_C_SOURCE=200809L)
+
 auris_set_warnings(auris_lesson_00)
 auris_enable_sanitizers(auris_lesson_00)
 
@@ -40,3 +50,6 @@ auris_enable_sanitizers(capture_scope)
 
 auris_set_warnings(analysis_demo)
 auris_enable_sanitizers(analysis_demo)
+
+auris_set_warnings(gcc_scope)
+auris_enable_sanitizers(gcc_scope)

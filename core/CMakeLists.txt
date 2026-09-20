@@ -4,8 +4,13 @@ add_library(
     src/auris_array.c
     src/auris_status.c
     src/auris_framer.c
+    src/auris_spectrum.c
     src/auris_preprocess.c
 )
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFTW3F REQUIRED IMPORTED_TARGET fftw3f)
+target_link_libraries(auris_core PRIVATE PkgConfig::FFTW3F)
 
 target_include_directories(
   auris_core

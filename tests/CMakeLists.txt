@@ -2,6 +2,13 @@ add_executable(test_status test_status.c)
 add_executable(test_array test_array.c)
 add_executable(test_audio test_audio.c)
 add_executable(test_analysis test_analysis.c)
+add_executable(test_spectrum test_spectrum.c)
+
+target_link_libraries(
+  test_spectrum
+  PRIVATE
+    auris_core
+)
 
 target_link_libraries(
   test_analysis
@@ -40,7 +47,11 @@ auris_enable_sanitizers(test_audio)
 auris_set_warnings(test_analysis)
 auris_enable_sanitizers(test_analysis)
 
+auris_set_warnings(test_spectrum)
+auris_enable_sanitizers(test_spectrum)
+
 add_test(NAME status COMMAND test_status)
 add_test(NAME array COMMAND test_array)
 add_test(NAME audio_contract COMMAND test_audio)
 add_test(NAME analysis COMMAND test_analysis)
+add_test(NAME spectrum COMMAND test_spectrum)
