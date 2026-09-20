@@ -21,5 +21,7 @@ int auris_overlay_apply(const auris_overlay_t *state, const float *scores,
                         size_t count, size_t best, bool valid,
                         auris_rgb24_t *frame);
 void auris_overlay_close(auris_overlay_t *state);
+/* Main-thread-only; preserves the expensive projection lookup. */
+int auris_overlay_set_style(auris_overlay_t *state,float cutoff,float opacity);
 
 #endif

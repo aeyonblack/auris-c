@@ -50,6 +50,15 @@ int main(void) {
   frame.stride = SIZE_MAX;
   assert(auris_overlay_apply(s, scores, 9U, 2U, true, &frame) == -EINVAL);
   frame.stride = 26U;
+  assert(auris_overlay_set_style(s,NAN,0.5f)==-EINVAL);
+  assert(auris_overlay_set_style(s,0.5f,1.1f)==-EINVAL);
+  assert(auris_overlay_set_style(s,0.5f,0.0f)==0);
+  memset(bytes,40,sizeof(bytes));
+  assert(auris_overlay_apply(s,scores,9U,2U,true,&frame)==0);
+  for (size_t i=0U;i<sizeof(bytes);++i) assert(bytes[i]==40U);
+  assert(auris_overlay_set_style(s,0.5f,1.0f)==0);
+  assert(auris_overlay_apply(s,scores,9U,2U,true,&frame)==0);
+  assert(memcmp(bytes,expected,sizeof(bytes))==0);
   auris_overlay_close(s); s = NULL;
 
   /* A quarter-turn camera/search basis change turns a y ramp into x. */

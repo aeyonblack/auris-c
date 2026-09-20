@@ -111,6 +111,15 @@ fail:
   return err;
 }
 
+int auris_overlay_set_style(auris_overlay_t *s,float cutoff,float opacity) {
+  if (!s || !isfinite(cutoff) || cutoff<0.0f || cutoff>=1.0f ||
+      !isfinite(opacity) || opacity<0.0f || opacity>1.0f) return -EINVAL;
+  s->config.cutoff=cutoff; s->config.opacity=opacity;
+  for (size_t i=0U;i<256U;++i)
+    s->palette[i][3]=(uint8_t)lroundf(255.0f*opacity*(0.22f+0.78f*(float)i/255.0f));
+  return 0;
+}
+
 int auris_overlay_apply(const auris_overlay_t *s, const float *scores,
                         size_t count, size_t best, bool valid,
                         auris_rgb24_t *frame) {
