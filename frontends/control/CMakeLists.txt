@@ -1,0 +1,7 @@
+find_package(Threads REQUIRED)
+add_library(auris_control STATIC src/auris_settings.c src/auris_touch.c src/auris_ui.c)
+target_include_directories(auris_control PUBLIC inc)
+target_link_libraries(auris_control PUBLIC auris_image Threads::Threads PRIVATE m)
+target_compile_definitions(auris_control PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(auris_control)
+auris_enable_sanitizers(auris_control)
