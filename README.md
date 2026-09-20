@@ -4,9 +4,6 @@
 
 Auris is an embedded acoustic-imaging system built around a synchronized eight-microphone array and a BeagleBone AI-64. It estimates the azimuth and elevation of a sound source, maps that estimate into camera coordinates, and presents the result as a heatmap over live video.
 
-> [!NOTE]
-> Auris is under active development. The repository currently contains the embedded C signal-processing foundation and hardware bring-up utilities; the complete 3D localization and video-overlay pipeline is being integrated incrementally.
-
 <p align="center">
   <img src="docs/assets/readme/acoustic-imager-demo-image.jpg" width="420" alt="Reference application showing an industrial acoustic imager locating a leak">
 </p>
