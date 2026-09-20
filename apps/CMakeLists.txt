@@ -100,7 +100,7 @@ auris_enable_sanitizers(auris_calibration_session)
 
 add_executable(imager_scope imager_scope.c)
 target_link_libraries(imager_scope PRIVATE auris_audio auris_config
-  auris_camera auris_calibration_session auris_outputs Threads::Threads)
+  auris_camera auris_calibration_session auris_outputs auris_control Threads::Threads)
 target_compile_definitions(imager_scope PRIVATE _POSIX_C_SOURCE=200809L)
 auris_set_warnings(imager_scope)
 auris_enable_sanitizers(imager_scope)

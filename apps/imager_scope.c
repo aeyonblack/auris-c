@@ -3,6 +3,7 @@
 #include "auris_array_configs.h"
 #include "auris_camera.h"
 #include "auris_outputs.h"
+#include "auris_ui.h"
 #include "auris_overlay.h"
 #include "auris_srp.h"
 #include "auris_timeline.h"
@@ -58,6 +59,9 @@ typedef struct {
   auris_activity_t activity;
   const auris_vec3f_t *directions;
   imager_calibration_capture_t collection;
+  auris_settings_t settings; /* Protected by mutex; DSP objects stay worker-owned. */
+  auris_ui_status_t status;
+  bool smoothing_applied;
 } audio_t;
 
 static void *audio_worker(void *context) {
@@ -99,6 +103,24 @@ static void *audio_worker(void *context) {
     if (auris_framer_push(&framer, &block, &analysis, &ready) != AURIS_OK) break;
     err = 0;
     if (!ready) continue;
+    auris_settings_t desired;
+    (void)pthread_mutex_lock(&a->mutex);
+    desired=a->settings;
+    (void)pthread_mutex_unlock(&a->mutex);
+    if (desired.gating!=a->activity.enabled || desired.smoothing!=a->smoothing_applied) {
+      if (desired.gating!=a->activity.enabled) {
+        a->activity.enabled=desired.gating;
+        auris_activity_reset(&a->activity);
+      }
+      if (auris_srp_set_smoothing(a->srp,desired.smoothing ? 0.100f:0.0f)!=AURIS_OK) {
+        err=-EINVAL; break;
+      }
+      a->smoothing_applied=desired.smoothing;
+      result.valid=false; evidence_us=0U;
+      (void)pthread_mutex_lock(&a->mutex);
+      a->history_count=0U; a->history_next=0U;
+      (void)pthread_mutex_unlock(&a->mutex);
+    }
     /* Estimate the analysis-centre time using the capture delay after read.
        This is a host/ALSA estimate, not an ADC hardware timestamp. */
     const uint64_t query_start = now_us();
@@ -134,6 +156,9 @@ static void *audio_worker(void *context) {
     next.dsp_us = next.published_us - dsp_start;
     if (next.valid) memcpy(next.scores, result.scores, sizeof(next.scores));
     (void)pthread_mutex_lock(&a->mutex);
+    a->status=(auris_ui_status_t){.dbfs=gate.level_dbfs,
+        .contrast=next.evidence ? result.contrast:0.0f,.ready=gate.ready,
+        .active=gate.active,.evidence=gate.evidence};
     a->history[a->history_next] = next;
     a->history_next = (a->history_next + 1U) % AUDIO_HISTORY;
     if (a->history_count < AUDIO_HISTORY) ++a->history_count;
@@ -219,9 +244,21 @@ static int controls(imager_calibration_t *session, audio_t *audio) {
   return 0;
 }
 
+typedef struct { auris_ui_t *ui; auris_display_info_t display; } touch_context_t;
+static void touch_event(void *context,const auris_touch_event_t *event) {
+  touch_context_t *c=context;
+  auris_touch_event_t mapped=*event;
+  if (!auris_touch_project(event->x,event->y,65535,65535,c->display.width,
+      c->display.height,640U,360U,c->display.rotation,&mapped.x,&mapped.y))
+    mapped.kind=AURIS_TOUCH_CANCEL;
+  auris_ui_touch(c->ui,&mapped,now_us());
+}
+
 int main(int argc, char **argv) {
   auris_outputs_config_t outputs={0};
   bool calibrating = false;
+  bool no_ui=false, fps_override=false;
+  const char *settings_path="configs/runtime_settings.txt", *touch_path=NULL;
   unsigned long fps = 15U;
   const char *device = NULL, *calibration_path = "configs/camera_calibration.txt";
   for (int i = 1; i < argc; ++i) {
@@ -232,12 +269,16 @@ int main(int argc, char **argv) {
     }
     if (parsed) continue;
     if (strcmp(argv[i], "--calibrate") == 0) calibrating = true;
+    else if (strcmp(argv[i], "--no-ui") == 0) no_ui=true;
+    else if (strcmp(argv[i], "--settings") == 0 && i+1<argc) settings_path=argv[++i];
+    else if (strcmp(argv[i], "--touch-device") == 0 && i+1<argc) touch_path=argv[++i];
     else if (strcmp(argv[i], "--calibration") == 0 && i + 1 < argc)
       calibration_path = argv[++i];
     else if (strcmp(argv[i], "--fps") == 0 && i + 1 < argc) {
       char *end = NULL;
       errno = 0;
       fps = strtoul(argv[++i], &end, 10);
+      fps_override=true;
       if (errno != 0 || end == argv[i] || *end != '\0' || fps < 1U || fps > 30U) {
         fprintf(stderr, "usage: %s [--calibrate] [--calibration FILE] [--fps 1..30] ALSA_DEVICE\n", argv[0]);
         return EXIT_FAILURE;
@@ -247,9 +288,21 @@ int main(int argc, char **argv) {
     else { device = NULL; break; }
   }
   if (device == NULL) {
+    fprintf(stderr,"runtime: [--settings FILE] [--no-ui] [--touch-device PATH]; touch UI defaults on with display, off during calibration\n");
     fprintf(stderr, "usage: %s [--calibrate] [--calibration FILE] [--fps 1..30] ALSA_DEVICE\n", argv[0]);
     return EXIT_FAILURE;
   }
+  auris_settings_t settings=auris_settings_defaults();
+  if (!calibrating) {
+    int loaded=auris_settings_load(settings_path,&settings);
+    if (loaded<0 && loaded!=-ENOENT)
+      fprintf(stderr,"settings: %s rejected: %s; using defaults\n",settings_path,strerror(-loaded));
+    else if (!loaded) fprintf(stderr,"settings: loaded %s\n",settings_path);
+  } else settings.smoothing=false;
+  if (fps_override) settings.fps=(unsigned int)fps;
+  fps=settings.fps;
+  auris_ui_t ui;
+  auris_ui_init(&ui,&settings,now_us());
   struct sigaction action = {0};
   action.sa_handler = stop;
   sigemptyset(&action.sa_mask);
@@ -279,12 +332,19 @@ int main(int argc, char **argv) {
                         {-0.25157f, -0.71978f, 1.97135f}},
       .auto_white_balance = true, .auto_exposure = true};
   audio_t audio = {.mutex = PTHREAD_MUTEX_INITIALIZER,
-                   .device = device, .array = auris_config_respeaker_usb_4()};
+                   .device = device, .array = auris_config_respeaker_usb_4(),
+                   .settings=settings,.smoothing_applied=settings.smoothing,
+                   .status={.dbfs=-120.0f}};
   atomic_init(&audio.stop, false);
   atomic_init(&audio.failed, false);
   auris_camera_t *camera = NULL;
   auris_image_t *image = NULL;
   auris_outputs_t *output_stream = NULL;
+  auris_touch_t *touch=NULL;
+  auris_settings_writer_t *writer=NULL;
+  touch_context_t touch_context={.ui=&ui};
+  bool ui_enabled=false,save_busy=false;
+  unsigned int saved_revision=0U;
   imager_calibration_t session = {.path = calibration_path};
   uint8_t *rgb = NULL;
   pthread_t thread;
@@ -312,13 +372,13 @@ int main(int argc, char **argv) {
   audio.srp = auris_srp_create(audio.array, AURIS_ALSA_RATE, directions, DIRECTIONS);
   if (audio.fft == NULL || audio.srp == NULL) goto done;
   if (auris_srp_set_grid(audio.srp, COLUMNS, ROWS, 1U) != AURIS_OK ||
-      auris_srp_set_smoothing(audio.srp, calibrating ? 0.0f : 0.100f) != AURIS_OK) goto done;
+      auris_srp_set_smoothing(audio.srp, settings.smoothing ? 0.100f : 0.0f) != AURIS_OK) goto done;
   auris_preprocess_init(&audio.prep);
   float energy = 0.0f;
   for (size_t n = 0U; n < AURIS_ANALYSIS_SIZE; ++n)
     energy += audio.prep.window[n] * audio.prep.window[n];
   auris_activity_config_t gate = auris_activity_defaults();
-  gate.enabled = true;
+  gate.enabled = settings.gating;
   if (auris_activity_init(&audio.activity, &gate, AURIS_ALSA_RATE,
                           audio.array->microphone_count, energy) != AURIS_OK)
     goto done;
@@ -333,7 +393,7 @@ int main(int argc, char **argv) {
       .layout = {processing.width, processing.height, rect->x, rect->y,
                   rect->width, rect->height},
       .columns = COLUMNS, .rows = ROWS,
-      .cutoff = 0.55f, .opacity = 0.75f, .mark_peak = true};
+      .cutoff = settings.cutoff, .opacity = settings.opacity, .mark_peak = true};
   session.drawing = drawing;
   err = auris_overlay_open(&session.overlay, &drawing);
   if (err < 0) goto done;
@@ -345,6 +405,15 @@ int main(int argc, char **argv) {
   err = auris_outputs_open(&output_stream, &outputs, STDOUT_FILENO,
                             canvas.width, canvas.height);
   if (err < 0) goto done;
+  if (!no_ui && !calibrating && auris_outputs_display_info(output_stream,&touch_context.display)) {
+    int opened=auris_touch_open(&touch,touch_path);
+    if (opened<0) fprintf(stderr,"touch unavailable: %s; continuing without controls\n",strerror(-opened));
+    else {
+      ui_enabled=true;
+      opened=auris_settings_writer_open(&writer,settings_path);
+      if (opened<0) fprintf(stderr,"settings writer unavailable: %s\n",strerror(-opened));
+    }
+  }
   err = auris_camera_start(camera);
   if (err < 0) goto done;
   /* Worker inherits blocked termination signals. Main owns the signal flag. */
@@ -361,10 +430,48 @@ int main(int argc, char **argv) {
   if (restored != 0) { err = -restored; goto done; }
 
   uint64_t next_output = 0U, last_camera = now_us(), next_timing = 0U;
-  const uint64_t output_period_us = 1000000U / fps;
+  uint64_t output_period_us = 1000000U / fps;
+  uint64_t fps_start=now_us(),fps_frames=0U;
+  float measured_fps=0.0f;
   while (running && !atomic_load(&audio.failed)) {
     err = auris_outputs_error(output_stream);
     if (err < 0) goto done;
+    if (touch) {
+      if (!auris_outputs_display_info(output_stream,&touch_context.display)) {
+        auris_touch_close(touch); touch=NULL; ui_enabled=false;
+      } else {
+        int polled=auris_touch_poll(touch,touch_event,&touch_context);
+        if (polled<0) {
+          fprintf(stderr,"touch stopped: %s; capture continues (restart to reconnect)\n",strerror(-polled));
+          auris_touch_close(touch); touch=NULL; ui_enabled=false;
+        }
+      }
+    }
+    if (ui.settings.fps!=fps) {
+      fps=ui.settings.fps; output_period_us=1000000U/fps; next_output=0U;
+      fps_start=now_us(); fps_frames=0U;
+    }
+    if (settings.cutoff!=ui.settings.cutoff || settings.opacity!=ui.settings.opacity) {
+      err=auris_overlay_set_style(session.overlay,ui.settings.cutoff,ui.settings.opacity);
+      if (err<0) goto done;
+      session.drawing.cutoff=ui.settings.cutoff; session.drawing.opacity=ui.settings.opacity;
+    }
+    settings=ui.settings;
+    (void)pthread_mutex_lock(&audio.mutex);
+    audio.settings=settings;
+    (void)pthread_mutex_unlock(&audio.mutex);
+    if (save_busy && auris_settings_save_status(writer)!=1) {
+      int saved=auris_settings_save_status(writer);
+      save_busy=false;
+      if (!saved) ui.saved_revision=saved_revision;
+      fprintf(stderr,"settings save: %s\n",saved ? strerror(-saved):"complete");
+    }
+    if (ui.save_requested) {
+      ui.save_requested=false;
+      int saved=auris_settings_save(writer,&settings);
+      if (!saved) { save_busy=true; saved_revision=ui.revision; }
+      else fprintf(stderr,"settings save: %s\n",strerror(-saved));
+    }
     if (calibrating) {
       err = controls(&session, &audio);
       if (err < 0) goto done;
@@ -410,10 +517,27 @@ int main(int argc, char **argv) {
     const uint64_t skew = latest.sample_us == 0U ? 0U :
         (frame.timestamp_us > latest.sample_us ? frame.timestamp_us - latest.sample_us
                                                : latest.sample_us - frame.timestamp_us);
-    const bool visible = latest.valid;
+    const bool visible = latest.valid && settings.overlay;
     err = auris_overlay_apply(session.overlay, latest.scores, DIRECTIONS, latest.best,
                                visible, &canvas);
     if (err < 0) goto done;
+    ++fps_frames;
+    if (composed-fps_start>=1000000U) {
+      measured_fps=(float)((double)fps_frames*1000000.0/(double)(composed-fps_start));
+      fps_frames=0U; fps_start=composed;
+    }
+    if (ui_enabled) {
+      auris_ui_status_t status;
+      (void)pthread_mutex_lock(&audio.mutex);
+      status=audio.status;
+      (void)pthread_mutex_unlock(&audio.mutex);
+      auris_output_stats_t stats;
+      auris_outputs_stats(output_stream,&stats);
+      status.fps=measured_fps; status.dropped=stats.dropped;
+      status.save_status=auris_settings_save_status(writer);
+      err=auris_ui_draw(&ui,&canvas,&status,composed);
+      if (err<0) goto done;
+    }
     uint32_t samples = 0U;
     if (calibrating) {
       (void)pthread_mutex_lock(&audio.mutex);
@@ -470,6 +594,8 @@ done:
             (unsigned long long)stats.dropped);
   }
   auris_outputs_close(output_stream);
+  auris_touch_close(touch);
+  auris_settings_writer_close(writer);
   auris_camera_close(camera);
   auris_overlay_close(session.overlay);
   auris_image_close(image);
