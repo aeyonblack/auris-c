@@ -123,7 +123,7 @@ where `p_i` and `p_j` are microphone positions and `c` is the configured speed o
 SRP-PHAT converts the pairwise correlations into a spatial objective. For a candidate unit direction `q`, the expected far-field delay for each pair is sampled and accumulated:
 
 ```math
-P(\mathbf{q}) = \sum_{i<j} R_{ij}^{\mathrm{PHAT}}\!\left(\tau_{ij}(\mathbf{q})\right),
+P(\mathbf{q}) = \sum_{i \lt j} R_{ij}^{\mathrm{PHAT}}\!\left(\tau_{ij}(\mathbf{q})\right),
 \qquad
 \tau_{ij}(\mathbf{q}) = \frac{(\mathbf{p}_j-\mathbf{p}_i)\cdot\mathbf{q}}{c}.
 ```
