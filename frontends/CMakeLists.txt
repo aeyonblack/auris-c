@@ -1,0 +1,7 @@
+add_subdirectory(output)
+add_subdirectory(stream)
+add_subdirectory(display)
+add_library(auris_outputs STATIC output/src/auris_outputs.c)
+target_link_libraries(auris_outputs PUBLIC auris_output PRIVATE auris_stream auris_display)
+auris_set_warnings(auris_outputs)
+auris_enable_sanitizers(auris_outputs)

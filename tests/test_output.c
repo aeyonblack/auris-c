@@ -1,4 +1,4 @@
-#include "auris_output.h"
+#include "auris_stream.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

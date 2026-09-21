@@ -1,0 +1,20 @@
+option(AURIS_ENABLE_DISPLAY "Build the Linux DRM display backend" ON)
+add_library(auris_display STATIC src/auris_display_pack.c)
+target_include_directories(auris_display PUBLIC inc)
+target_link_libraries(auris_display PUBLIC auris_output)
+if(AURIS_ENABLE_DISPLAY)
+  find_path(AURIS_DRM_INCLUDE xf86drm.h
+    HINTS "$ENV{HOME}/.local/share/auris-deps/libdrm/usr/include" REQUIRED)
+  find_path(AURIS_DRM_UAPI_INCLUDE drm.h PATH_SUFFIXES libdrm
+    HINTS "$ENV{HOME}/.local/share/auris-deps/libdrm/usr/include" REQUIRED)
+  find_library(AURIS_DRM_LIBRARY NAMES drm libdrm.so.2 REQUIRED)
+  target_sources(auris_display PRIVATE src/auris_display.c)
+  target_include_directories(auris_display SYSTEM PRIVATE
+    ${AURIS_DRM_INCLUDE} ${AURIS_DRM_UAPI_INCLUDE})
+  target_link_libraries(auris_display PRIVATE ${AURIS_DRM_LIBRARY})
+else()
+  target_sources(auris_display PRIVATE src/auris_display_stub.c)
+endif()
+target_compile_definitions(auris_display PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(auris_display)
+auris_enable_sanitizers(auris_display)

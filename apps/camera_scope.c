@@ -1,6 +1,6 @@
 #include "auris_camera.h"
 #include "auris_image.h"
-#include "auris_output.h"
+#include "auris_outputs.h"
 #include <errno.h>
 #include <linux/videodev2.h>
 #include <signal.h>
@@ -16,10 +16,17 @@ static void stop(int signal_number) {
 }
 
 int main(int argc, char **argv) {
+  auris_outputs_config_t outputs={0};
   unsigned long limit = 0U;
   unsigned long fps = 15U;
   bool limit_set = false;
   for (int i = 1; i < argc; ++i) {
+    int parsed=auris_outputs_option(&outputs,argc,argv,&i);
+    if (parsed<0) {
+      fprintf(stderr,"output options: --output stream|display (repeatable), --rotation 0|90|180|270, --drm-device PATH, --connector ID\n");
+      return EXIT_FAILURE;
+    }
+    if (parsed) continue;
     const bool rate = strcmp(argv[i], "--fps") == 0;
     if ((rate && i + 1 >= argc) || (!rate && limit_set)) {
       fprintf(stderr, "usage: %s [--fps 1..30] [captured_frames]\n", argv[0]);
@@ -58,7 +65,7 @@ int main(int argc, char **argv) {
       .ti_5_10_packed = true};
   auris_camera_t *camera = NULL;
   auris_image_t *image = NULL;
-  auris_output_t *output_stream = NULL;
+  auris_outputs_t *output_stream = NULL;
   uint8_t *rgb = NULL;
   int result = EXIT_FAILURE;
   int err = auris_camera_open(&camera, &config);
@@ -99,8 +106,8 @@ int main(int argc, char **argv) {
   fprintf(stderr,
           "RGGB %ux%u: reported stride %u, used stride %u, image %u bytes\n",
           f->width, f->height, f->reported_stride, f->stride, f->sizeimage);
-  err = auris_output_open_jpeg_stream(&output_stream, STDOUT_FILENO,
-                                      output.width, output.height, 80U);
+  err = auris_outputs_open(&output_stream, &outputs, STDOUT_FILENO,
+                            output.width, output.height);
   if (err < 0) {
     fprintf(stderr, "output open: %s\n", strerror(-err));
     goto done;
@@ -115,7 +122,7 @@ int main(int argc, char **argv) {
   uint64_t first_us = 0U, gaps = 0U, next_output = 0U;
   const uint64_t output_period_us = 1000000U / fps;
   while (running && (limit == 0U || frames < limit)) {
-    err = auris_output_error(output_stream);
+    err = auris_outputs_error(output_stream);
     if (err < 0) {
       fprintf(stderr, "output: %s\n", strerror(-err));
       goto done;
@@ -167,7 +174,7 @@ int main(int argc, char **argv) {
           .sequence = frame.sequence,
           .camera_us = frame.timestamp_us,
           .flags = frame.flags};
-      err = auris_output_submit(output_stream, &output, &metadata);
+      err = auris_outputs_submit(output_stream, &output, &metadata);
       if (err < 0) {
         fprintf(stderr, "output submit: %s\n", strerror(-err));
         goto done;
@@ -185,7 +192,7 @@ int main(int argc, char **argv) {
     }
   }
   if (limit != 0U) {
-    err = auris_output_flush(output_stream, 3000U);
+    err = auris_outputs_flush(output_stream, 3000U);
     if (err < 0) {
       fprintf(stderr, "output flush: %s\n", strerror(-err));
       goto done;
@@ -195,15 +202,15 @@ int main(int argc, char **argv) {
 done:
   if (output_stream != NULL) {
     auris_output_stats_t stats;
-    auris_output_stats(output_stream, &stats);
+    auris_outputs_stats(output_stream, &stats);
     fprintf(stderr,
-            "stream %lu fps: submitted %llu, sent %llu, dropped %llu, last JPEG %zu bytes\n",
+            "primary output %lu fps: submitted %llu, sent %llu, replaced %llu, last payload %zu bytes\n",
             fps,
             (unsigned long long)stats.submitted,
             (unsigned long long)stats.sent,
             (unsigned long long)stats.dropped, stats.encoded_bytes);
   }
-  auris_output_close(output_stream);
+  auris_outputs_close(output_stream);
   auris_camera_close(camera);
   auris_image_close(image);
   free(rgb);

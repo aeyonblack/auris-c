@@ -1,0 +1,7 @@
+find_package(Threads REQUIRED)
+add_library(auris_output STATIC src/auris_output.c)
+target_include_directories(auris_output PUBLIC inc)
+target_link_libraries(auris_output PUBLIC auris_image PRIVATE Threads::Threads)
+target_compile_definitions(auris_output PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(auris_output)
+auris_enable_sanitizers(auris_output)

@@ -2,7 +2,7 @@
 #include "auris_alsa.h"
 #include "auris_array_configs.h"
 #include "auris_camera.h"
-#include "auris_output.h"
+#include "auris_outputs.h"
 #include "auris_overlay.h"
 #include "auris_srp.h"
 #include "auris_timeline.h"
@@ -220,10 +220,17 @@ static int controls(imager_calibration_t *session, audio_t *audio) {
 }
 
 int main(int argc, char **argv) {
+  auris_outputs_config_t outputs={0};
   bool calibrating = false;
   unsigned long fps = 15U;
   const char *device = NULL, *calibration_path = "configs/camera_calibration.txt";
   for (int i = 1; i < argc; ++i) {
+    int parsed=auris_outputs_option(&outputs,argc,argv,&i);
+    if (parsed<0) {
+      fprintf(stderr,"output options: --output stream|display (repeatable), --rotation 0|90|180|270, --drm-device PATH, --connector ID\n");
+      return EXIT_FAILURE;
+    }
+    if (parsed) continue;
     if (strcmp(argv[i], "--calibrate") == 0) calibrating = true;
     else if (strcmp(argv[i], "--calibration") == 0 && i + 1 < argc)
       calibration_path = argv[++i];
@@ -277,7 +284,7 @@ int main(int argc, char **argv) {
   atomic_init(&audio.failed, false);
   auris_camera_t *camera = NULL;
   auris_image_t *image = NULL;
-  auris_output_t *output_stream = NULL;
+  auris_outputs_t *output_stream = NULL;
   imager_calibration_t session = {.path = calibration_path};
   uint8_t *rgb = NULL;
   pthread_t thread;
@@ -335,8 +342,8 @@ int main(int argc, char **argv) {
   if (rgb == NULL) { err = -ENOMEM; goto done; }
   auris_rgb24_t canvas = {rgb, processing.width, processing.height,
                           (size_t)processing.width * 3U, bytes};
-  err = auris_output_open_jpeg_stream(&output_stream, STDOUT_FILENO,
-                                      canvas.width, canvas.height, 80U);
+  err = auris_outputs_open(&output_stream, &outputs, STDOUT_FILENO,
+                            canvas.width, canvas.height);
   if (err < 0) goto done;
   err = auris_camera_start(camera);
   if (err < 0) goto done;
@@ -356,7 +363,7 @@ int main(int argc, char **argv) {
   uint64_t next_output = 0U, last_camera = now_us(), next_timing = 0U;
   const uint64_t output_period_us = 1000000U / fps;
   while (running && !atomic_load(&audio.failed)) {
-    err = auris_output_error(output_stream);
+    err = auris_outputs_error(output_stream);
     if (err < 0) goto done;
     if (calibrating) {
       err = controls(&session, &audio);
@@ -420,7 +427,7 @@ int main(int argc, char **argv) {
         .visible = visible, .evidence = latest.evidence, .samples = samples,
         .fits = (uint32_t)session.count, .checks = (uint32_t)session.check_count,
         .dsp_us = latest.dsp_us};
-    err = auris_output_submit(output_stream, &canvas, &metadata);
+    err = auris_outputs_submit(output_stream, &canvas, &metadata);
     if (err < 0) goto done;
     if (next_output == 0U)
       next_output = received;
@@ -431,8 +438,8 @@ int main(int argc, char **argv) {
       imager_calibration_frame(&session, frame.sequence, frame.timestamp_us, monotonic);
     if (composed >= next_timing) {
       auris_output_stats_t stats;
-      auris_output_stats(output_stream, &stats);
-      fprintf(stderr, "TIMING camera %.1f ms | matched map %.1f ms | skew %.1f ms | DSP %.2f ms | JPEG %.2f ms/%zu B | write %.2f ms | dropped %llu | overlay %s\n",
+      auris_outputs_stats(output_stream, &stats);
+      fprintf(stderr, "TIMING camera %.1f ms | matched map %.1f ms | skew %.1f ms | DSP %.2f ms | output convert %.2f ms/%zu B | present %.2f ms | dropped %llu | overlay %s\n",
           monotonic && composed >= frame.timestamp_us ?
             (double)(composed - frame.timestamp_us)/1000.0 : -1.0,
           latest.sample_us != 0U && composed >= latest.sample_us ?
@@ -455,14 +462,14 @@ done:
     fprintf(stderr, "imager setup/processing failed\n");
   if (output_stream != NULL) {
     auris_output_stats_t stats;
-    auris_output_stats(output_stream, &stats);
-    fprintf(stderr, "stream %lu fps: submitted %llu, sent %llu, dropped %llu\n",
+    auris_outputs_stats(output_stream, &stats);
+    fprintf(stderr, "primary output %lu fps: submitted %llu, sent %llu, replaced %llu\n",
             fps,
             (unsigned long long)stats.submitted,
             (unsigned long long)stats.sent,
             (unsigned long long)stats.dropped);
   }
-  auris_output_close(output_stream);
+  auris_outputs_close(output_stream);
   auris_camera_close(camera);
   auris_overlay_close(session.overlay);
   auris_image_close(image);

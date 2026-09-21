@@ -28,7 +28,7 @@ include(CTest)
 add_subdirectory(core)
 add_subdirectory(drivers/audio)
 add_subdirectory(drivers/video)
-add_subdirectory(frontends/stream)
+add_subdirectory(frontends)
 add_subdirectory(configs)
 add_subdirectory(apps)
 

@@ -31,11 +31,19 @@ typedef struct {
   size_t encoded_bytes;
 } auris_output_stats_t;
 
-/* JPEG is one replaceable output frontend. submit() only copies into a
-   one-frame latest-value mailbox; encoding and writes happen on its worker. */
-int auris_output_open_jpeg_stream(auris_output_t **out, int fd,
-                                  uint32_t width, uint32_t height,
-                                  unsigned int quality);
+/* Backend functions run only on their worker (close runs after join).
+   present/start must check cancelled while waiting. Context ownership passes
+   to open_backend even on failure. No callback may retain the RGB pointer. */
+typedef bool (*auris_output_cancel_t)(void *context);
+typedef struct {
+  int (*start)(void *, auris_output_cancel_t, void *);
+  int (*present)(void *, const auris_rgb24_t *, const auris_output_frame_t *,
+                 auris_output_stats_t *, auris_output_cancel_t, void *);
+  void (*close)(void *);
+} auris_output_backend_t;
+int auris_output_open_backend(auris_output_t **out, uint32_t width,
+                              uint32_t height, void *context,
+                              const auris_output_backend_t *backend);
 int auris_output_submit(auris_output_t *output, const auris_rgb24_t *image,
                         const auris_output_frame_t *frame);
 int auris_output_flush(auris_output_t *output, unsigned int timeout_ms);
