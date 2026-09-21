@@ -3,6 +3,7 @@
 
 #include "auris_array.h"
 #include "auris_status.h"
+#include <stdbool.h>
 
 typedef struct {
   size_t width;
@@ -16,5 +17,8 @@ auris_status_t auris_view_ray(const auris_view_t *view, float u, float v,
 auris_status_t auris_view_grid(const auris_view_t *view, size_t columns,
                                size_t rows, auris_vec3f_t *out,
                                size_t capacity);
+auris_status_t auris_view_project(const auris_view_t *view,
+                                  auris_vec3f_t direction, float *u, float *v,
+                                  bool *visible);
 
 #endif

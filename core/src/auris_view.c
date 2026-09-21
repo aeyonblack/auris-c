@@ -4,6 +4,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include <float.h>
 
 static bool view_valid(const auris_view_t *v) {
   if (v == NULL || v->width < 2U || v->height < 2U || !isfinite(v->fx) ||
@@ -85,5 +86,50 @@ auris_status_t auris_view_grid(const auris_view_t *view, size_t columns,
       }
     }
   }
+  return AURIS_OK;
+}
+
+auris_status_t auris_view_project(const auris_view_t *view,
+                                  auris_vec3f_t direction, float *u, float *v,
+                                  bool *visible) {
+  if (u == NULL || v == NULL || visible == NULL) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  *u = 0.0f;
+  *v = 0.0f;
+  *visible = false;
+  if (!view_valid(view) || !isfinite(direction.x_m) ||
+      !isfinite(direction.y_m) || !isfinite(direction.z_m)) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  const float scale = fmaxf(fabsf(direction.x_m),
+      fmaxf(fabsf(direction.y_m), fabsf(direction.z_m)));
+  if (scale == 0.0f) return AURIS_ERROR_INVALID_ARGUMENT;
+  /* Rescale without a square root; projection depends only on ratios. */
+  const float a[3] = {direction.x_m / scale, direction.y_m / scale,
+                      direction.z_m / scale};
+  float camera[3] = {0};
+  for (size_t axis = 0U; axis < 3U; ++axis) {
+    for (size_t row = 0U; row < 3U; ++row) {
+      camera[axis] += view->rotation[row][axis] * a[row];
+    }
+  }
+  if (camera[2] <= 1.0e-6f) {
+    return AURIS_OK;
+  }
+  const float inverse_z = 1.0f / camera[2];
+  const float x = view->fx * (camera[0] * inverse_z) + view->cx;
+  const float y = view->cy - view->fy * (camera[1] * inverse_z);
+  const float xmax = (float)(view->width - 1U);
+  const float ymax = (float)(view->height - 1U);
+  const float tolerance = 4.0f * FLT_EPSILON * fmaxf(xmax, ymax);
+  if (!isfinite(x) || !isfinite(y) || x < -tolerance || y < -tolerance ||
+      x > xmax + tolerance || y > ymax + tolerance) {
+    return AURIS_OK;
+  }
+  /* Keep round-off at boundary rays from changing visibility. */
+  *u = fminf(xmax, fmaxf(0.0f, x));
+  *v = fminf(ymax, fmaxf(0.0f, y));
+  *visible = true;
   return AURIS_OK;
 }
