@@ -1,0 +1,5 @@
+add_library(auris_overlay STATIC src/auris_overlay.c)
+target_include_directories(auris_overlay PUBLIC inc)
+target_link_libraries(auris_overlay PUBLIC auris_core auris_image)
+auris_set_warnings(auris_overlay)
+auris_enable_sanitizers(auris_overlay)

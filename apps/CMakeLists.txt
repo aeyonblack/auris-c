@@ -89,3 +89,11 @@ auris_enable_sanitizers(heatmap_scope)
 
 auris_set_warnings(camera_scope)
 auris_enable_sanitizers(camera_scope)
+
+find_package(Threads REQUIRED)
+add_executable(imager_scope imager_scope.c)
+target_link_libraries(imager_scope PRIVATE auris_audio auris_config
+  auris_camera auris_overlay Threads::Threads)
+target_compile_definitions(imager_scope PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(imager_scope)
+auris_enable_sanitizers(imager_scope)

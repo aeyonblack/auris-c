@@ -32,3 +32,4 @@ auris_set_warnings(auris_core)
 auris_enable_sanitizers(auris_core)
 
 add_subdirectory(image)
+add_subdirectory(overlay)
