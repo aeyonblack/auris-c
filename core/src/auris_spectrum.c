@@ -1,9 +1,5 @@
 #include "auris_spectrum.h"
-#include "auris_analysis.h"
-#include "auris_audio.h"
-#include "auris_status.h"
 
-#include <errno.h>
 #include <fftw3.h>
 #include <math.h>
 #include <stdlib.h>
@@ -14,6 +10,7 @@ struct auris_fft {
   fftwf_complex *frequency;
   fftwf_plan forward;
   fftwf_plan inverse;
+  fftwf_plan fine_inverse;
 };
 
 void auris_fft_destroy(auris_fft_t *fft) {
@@ -26,6 +23,9 @@ void auris_fft_destroy(auris_fft_t *fft) {
   if (fft->inverse != NULL) {
     fftwf_destroy_plan(fft->inverse);
   }
+  if (fft->fine_inverse != NULL) {
+    fftwf_destroy_plan(fft->fine_inverse);
+  }
   fftwf_free(fft->frequency);
   fftwf_free(fft->time);
   free(fft);
@@ -36,8 +36,8 @@ auris_fft_t *auris_fft_create(void) {
   if (fft == NULL) {
     return NULL;
   }
-  fft->time = fftwf_alloc_real(AURIS_ANALYSIS_SIZE);
-  fft->frequency = fftwf_alloc_complex(AURIS_FFT_BINS);
+  fft->time = fftwf_alloc_real(AURIS_GCC_SIZE);
+  fft->frequency = fftwf_alloc_complex(AURIS_GCC_SIZE / 2U + 1U);
   if (fft->time == NULL || fft->frequency == NULL) {
     auris_fft_destroy(fft);
     return NULL;
@@ -46,7 +46,10 @@ auris_fft_t *auris_fft_create(void) {
                                        fft->frequency, FFTW_ESTIMATE);
   fft->inverse = fftwf_plan_dft_c2r_1d((int)AURIS_ANALYSIS_SIZE, fft->frequency,
                                        fft->time, FFTW_ESTIMATE);
-  if (fft->forward == NULL || fft->inverse == NULL) {
+  fft->fine_inverse = fftwf_plan_dft_c2r_1d((int)AURIS_GCC_SIZE, fft->frequency,
+                                            fft->time, FFTW_ESTIMATE);
+  if (fft->forward == NULL || fft->inverse == NULL ||
+      fft->fine_inverse == NULL) {
     auris_fft_destroy(fft);
     return NULL;
   }
@@ -74,37 +77,41 @@ auris_status_t auris_spectrum_apply(auris_fft_t *fft,
   return AURIS_OK;
 }
 
-auris_status_t auris_gcc_phat(auris_fft_t *fft,
-                              const auris_spectrum_t *spectrum, size_t a,
-                              size_t b, int max_lag, auris_gcc_t *out) {
-  if (fft == NULL || spectrum == NULL || out == NULL ||
-      spectrum->channels > AURIS_AUDIO_CHANNELS || a >= spectrum->channels ||
-      b >= spectrum->channels || a == b || max_lag < 0 ||
-      max_lag >= (int)AURIS_ANALYSIS_SIZE / 2) {
-    return AURIS_ERROR_INVALID_ARGUMENT;
-  }
+static bool pair_valid(const auris_spectrum_t *s, size_t a, size_t b) {
+  return s != NULL && s->channels <= AURIS_AUDIO_CHANNELS && a < s->channels &&
+         b < s->channels && a != b;
+}
+
+static bool prepare_phat(auris_fft_t *fft, const auris_spectrum_t *s, size_t a,
+                         size_t b) {
   const float epsilon = 1.0e-12f;
-  out->valid = false;
-  out->lag_samples = 0;
-  out->peak = 0.0f;
-  for (size_t k = 0U; k < AURIS_FFT_BINS; ++k) {
-    const float ar = spectrum->bins[a][k][0];
-    const float ai = spectrum->bins[a][k][1];
-    const float br = spectrum->bins[b][k][0];
-    const float bi = spectrum->bins[b][k][1];
+  bool valid = false;
+  memset(fft->frequency, 0, (AURIS_GCC_SIZE / 2U + 1U) * sizeof(fftwf_complex));
+  for (size_t k = 1U; k + 1U < AURIS_FFT_BINS; ++k) {
+    const float ar = s->bins[a][k][0];
+    const float ai = s->bins[a][k][1];
+    const float br = s->bins[b][k][0];
+    const float bi = s->bins[b][k][1];
     const float real = br * ar + bi * ai;
     const float imag = bi * ar - br * ai;
     const float magnitude = hypotf(real, imag);
-    fft->frequency[k][0] = 0.0f;
-    fft->frequency[k][1] = 0.0f;
-    if (k > 0U && k + 1U < AURIS_FFT_BINS) {
-      fft->frequency[k][0] = real / (magnitude + epsilon);
-      fft->frequency[k][1] = imag / (magnitude + epsilon);
-      if (magnitude > epsilon) {
-        out->valid = true;
-      }
-    }
+    fft->frequency[k][0] = real / (magnitude + epsilon);
+    fft->frequency[k][1] = imag / (magnitude + epsilon);
+    valid = valid || magnitude > epsilon;
   }
+  return valid;
+}
+
+auris_status_t auris_gcc_phat(auris_fft_t *fft, const auris_spectrum_t *s,
+                              size_t a, size_t b, int max_lag,
+                              auris_gcc_t *out) {
+  if (fft == NULL || out == NULL || !pair_valid(s, a, b) || max_lag < 0 ||
+      max_lag >= (int)AURIS_ANALYSIS_SIZE / 2) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  out->lag_samples = 0;
+  out->peak = 0.0f;
+  out->valid = prepare_phat(fft, s, a, b);
   fftwf_execute(fft->inverse);
   for (size_t n = 0U; n < AURIS_ANALYSIS_SIZE; ++n) {
     out->correlation[n] = fft->time[n] / (float)AURIS_ANALYSIS_SIZE;
@@ -122,5 +129,19 @@ auris_status_t auris_gcc_phat(auris_fft_t *fft,
     }
   }
   out->peak = best;
+  return AURIS_OK;
+}
+
+auris_status_t auris_gcc_phat_curve(auris_fft_t *fft, const auris_spectrum_t *s,
+                                    size_t a, size_t b,
+                                    float curve[AURIS_GCC_SIZE], bool *valid) {
+  if (fft == NULL || curve == NULL || valid == NULL || !pair_valid(s, a, b)) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  *valid = prepare_phat(fft, s, a, b);
+  fftwf_execute(fft->fine_inverse);
+  for (size_t n = 0U; n < AURIS_GCC_SIZE; ++n) {
+    curve[n] = fft->time[n] / (float)AURIS_ANALYSIS_SIZE;
+  }
   return AURIS_OK;
 }

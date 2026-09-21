@@ -7,6 +7,8 @@
 #include <stdint.h>
 
 #define AURIS_FFT_BINS (AURIS_ANALYSIS_SIZE / 2U + 1U)
+#define AURIS_GCC_UPSAMPLE 8U
+#define AURIS_GCC_SIZE (AURIS_ANALYSIS_SIZE * AURIS_GCC_UPSAMPLE)
 
 typedef struct auris_fft auris_fft_t;
 
@@ -32,5 +34,9 @@ auris_status_t auris_spectrum_apply(auris_fft_t *fft,
 auris_status_t auris_gcc_phat(auris_fft_t *fft,
                               const auris_spectrum_t *spectrum, size_t a,
                               size_t b, int max_lag, auris_gcc_t *out);
+auris_status_t auris_gcc_phat_curve(auris_fft_t *fft,
+                                    const auris_spectrum_t *spectrum, size_t a,
+                                    size_t b, float curve[AURIS_GCC_SIZE],
+                                    bool *valid);
 
 #endif
