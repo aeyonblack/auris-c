@@ -4,6 +4,14 @@ add_executable(test_audio test_audio.c)
 add_executable(test_analysis test_analysis.c)
 add_executable(test_spectrum test_spectrum.c)
 add_executable(test_srp test_srp.c)
+add_executable(test_view test_view.c)
+
+target_link_libraries(
+  test_view
+  PRIVATE
+    auris_core
+    auris_config
+)
 
 target_link_libraries(
   test_srp
@@ -61,9 +69,13 @@ auris_enable_sanitizers(test_spectrum)
 auris_set_warnings(test_srp)
 auris_enable_sanitizers(test_srp)
 
+auris_set_warnings(test_view)
+auris_enable_sanitizers(test_view)
+
 add_test(NAME status COMMAND test_status)
 add_test(NAME array COMMAND test_array)
 add_test(NAME audio_contract COMMAND test_audio)
 add_test(NAME analysis COMMAND test_analysis)
 add_test(NAME spectrum COMMAND test_spectrum)
 add_test(NAME srp COMMAND test_srp)
+add_test(NAME view COMMAND test_view)

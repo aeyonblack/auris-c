@@ -7,6 +7,7 @@ add_library(
     src/auris_spectrum.c
     src/auris_preprocess.c
     src/auris_srp.c
+    src/auris_view.c
 )
 
 find_package(PkgConfig REQUIRED)
