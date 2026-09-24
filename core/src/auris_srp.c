@@ -18,6 +18,7 @@ struct auris_srp {
   size_t channels;
   size_t count;
   size_t pair_count;
+  size_t columns, rows, step;
   auris_mic_pair_t pairs[AURIS_SRP_MAX_PAIRS];
   auris_vec3f_t directions[AURIS_SRP_MAX_DIRECTIONS];
   lookup_t *table;
@@ -120,6 +121,86 @@ static float pair_score(const auris_srp_t *s, size_t q, size_t p) {
   return a + entry.fraction * (b - a);
 }
 
+auris_status_t auris_srp_set_grid(auris_srp_t *s,
+    size_t columns, size_t rows, size_t step) {
+  if (s == NULL || columns < 2U || rows < 2U || step == 0U ||
+      columns > AURIS_SRP_MAX_DIRECTIONS / rows ||
+      columns * rows != s->count ||
+      (columns - 1U) % step != 0U || (rows - 1U) % step != 0U) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  s->columns = columns;
+  s->rows = rows;
+  s->step = step;
+  return AURIS_OK;
+}
+
+static void evaluate(const auris_srp_t *s, size_t q,
+                     auris_srp_result_t *out) {
+  float sum = 0.0f;
+  for (size_t p = 0U; p < s->pair_count; ++p) {
+    sum += pair_score(s, q, p);
+  }
+  const float score = sum / (float)s->pair_count;
+  out->scores[q] = score;
+  ++out->evaluated;
+  if (score > out->peak || (score == out->peak && q < out->best)) {
+    out->peak = score;
+    out->best = q;
+  }
+}
+
+static void scan(const auris_srp_t *s, auris_srp_result_t *out) {
+  out->peak = -INFINITY;
+  if (s->step <= 1U) {
+    for (size_t q = 0U; q < s->count; ++q) {
+      evaluate(s, q, out);
+    }
+    return;
+  }
+  const size_t step = s->step, columns = s->columns, rows = s->rows;
+  out->approximate = true;
+  for (size_t y = 0U; y < rows; y += step) {
+    for (size_t x = 0U; x < columns; x += step) {
+      evaluate(s, y * columns + x, out);
+    }
+  }
+  /* Save the coarse winner before refinement changes out->best. */
+  const size_t cx = out->best % columns, cy = out->best / columns;
+  const size_t x0 = cx >= step ? cx - step : 0U;
+  const size_t y0 = cy >= step ? cy - step : 0U;
+  const size_t x1 = cx + step < columns ? cx + step : columns - 1U;
+  const size_t y1 = cy + step < rows ? cy + step : rows - 1U;
+  for (size_t y = y0; y <= y1; ++y) {
+    for (size_t x = x0; x <= x1; ++x) {
+      if (x % step != 0U || y % step != 0U) {
+        evaluate(s, y * columns + x, out);
+      }
+    }
+  }
+  /* Complete the rectangular map from coarse anchors. These estimates
+     never participate in choosing the winner. */
+  for (size_t y = 0U; y < rows; ++y) {
+    for (size_t x = 0U; x < columns; ++x) {
+      if ((x % step == 0U && y % step == 0U) ||
+          (x >= x0 && x <= x1 && y >= y0 && y <= y1)) {
+        continue;
+      }
+      const size_t left = x == columns - 1U ? x - step : x / step * step;
+      const size_t top = y == rows - 1U ? y - step : y / step * step;
+      const float fx = (float)(x - left) / (float)step;
+      const float fy = (float)(y - top) / (float)step;
+      const float a = out->scores[top * columns + left];
+      const float b = out->scores[top * columns + left + step];
+      const float c = out->scores[(top + step) * columns + left];
+      const float d = out->scores[(top + step) * columns + left + step];
+      out->scores[y * columns + x] =
+          (1.0f - fy) * ((1.0f - fx) * a + fx * b) +
+          fy * ((1.0f - fx) * c + fx * d);
+    }
+  }
+}
+
 auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
                                const auris_spectrum_t *spectrum,
                                auris_srp_result_t *out) {
@@ -156,22 +237,12 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
   }
   s->history_ready = all_valid;
   s->next_frame = spectrum->first_frame + (uint64_t)AURIS_ANALYSIS_HOP;
-  float best = -INFINITY;
+  scan(s, out);
+  const float best = out->peak;
   float minimum = INFINITY;
   for (size_t q = 0U; q < s->count; ++q) {
-    float sum = 0.0f;
-    for (size_t p = 0U; p < s->pair_count; ++p) {
-      sum += pair_score(s, q, p);
-    }
-    const float score = sum / (float)s->pair_count;
-    out->scores[q] = score;
-    minimum = fminf(minimum, score);
-    if (score > best) {
-      best = score;
-      out->best = q;
-    }
+    minimum = fminf(minimum, out->scores[q]);
   }
-  out->peak = best;
   for (size_t p = 0U; p < s->pair_count; ++p) {
     out->contributions[p] = pair_score(s, out->best, p);
     const lookup_t entry = s->table[out->best * s->pair_count + p];

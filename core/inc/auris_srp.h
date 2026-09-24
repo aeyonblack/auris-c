@@ -6,7 +6,8 @@
 #include "auris_status.h"
 #include <stdint.h>
 
-#define AURIS_SRP_MAX_DIRECTIONS 1024U
+#define AURIS_SRP_MAX_DIRECTIONS 4096U
+#define AURIS_SRP_GRID_SEARCH 1
 #define AURIS_SRP_MAX_PAIRS                                                    \
   (AURIS_AUDIO_CHANNELS * (AURIS_AUDIO_CHANNELS - 1U) / 2U)
 
@@ -16,6 +17,8 @@ typedef struct {
   size_t directions;
   size_t pairs;
   size_t best;
+  size_t evaluated;
+  bool approximate;
   uint64_t first_frame;
   float scores[AURIS_SRP_MAX_DIRECTIONS];
   float contributions[AURIS_SRP_MAX_PAIRS];
@@ -34,5 +37,7 @@ auris_status_t auris_srp_apply(auris_srp_t *state, auris_fft_t *fft,
                                auris_srp_result_t *out);
 auris_status_t auris_srp_set_smoothing(auris_srp_t *s, float seconds);
 void auris_srp_reset(auris_srp_t *state);
+auris_status_t auris_srp_set_grid(auris_srp_t *state,
+    size_t columns, size_t rows, size_t step);
 
 #endif

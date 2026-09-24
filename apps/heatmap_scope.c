@@ -11,10 +11,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-#define COLUMNS 33U
-#define ROWS 25U
+#define COLUMNS 65U
+#define ROWS 49U
 #define DIRECTIONS (COLUMNS * ROWS)
+#define SEARCH_STEP 1U
+_Static_assert(DIRECTIONS <= AURIS_SRP_MAX_DIRECTIONS,
+               "grid exceeds SRP capacity");
 
 static const auris_view_t view = {
     .width = 640U,
@@ -69,6 +73,11 @@ static void synthetic_block(auris_audio_block_t *block,
   }
 }
 
+static double elapsed_ms(struct timespec start, struct timespec end) {
+  return 1000.0 * ((double)end.tv_sec - (double)start.tv_sec) +
+         0.000001 * ((double)end.tv_nsec - (double)start.tv_nsec);
+}
+
 int main(int argc, char **argv) {
   const bool display = argc > 1 && strcmp(argv[1], "--display") == 0;
   if (display) {
@@ -94,7 +103,8 @@ int main(int argc, char **argv) {
       target[i] = strtof(argv[i + 2U], &end);
       if (errno != 0 || end == argv[i + 2U] || *end != '\0' ||
           !isfinite(target[i]) || target[i] < 0.0f || target[i] > limits[i]) {
-        fprintf(stderr, "column must be 0..32 and row 0..24\n");
+        fprintf(stderr, "column must be 0..%u and row 0..%u\n",
+                COLUMNS - 1U, ROWS - 1U);
         return EXIT_FAILURE;
       }
     }
@@ -134,6 +144,10 @@ int main(int argc, char **argv) {
     goto done;
   }
   auris_framer_t framer;
+  if (auris_srp_set_grid(srp, COLUMNS, ROWS, SEARCH_STEP) != AURIS_OK) {
+    fprintf(stderr, "search grid setup failed\n");
+    goto done;
+  }
   auris_framer_reset(&framer);
   auris_preprocess_t prep;
   auris_preprocess_init(&prep);
@@ -192,6 +206,8 @@ int main(int argc, char **argv) {
     }
   }
   uint64_t position = 0U;
+  double srp_total_ms = 0.0, srp_max_ms = 0.0;
+  size_t srp_calls = 0U;
   while (keep_running) {
     if (synthetic) {
       if (position >= (uint64_t)AURIS_ALSA_RATE * 10U) {
@@ -222,10 +238,23 @@ int main(int argc, char **argv) {
       goto done;
     }
     if (gate.active && gate.evidence) {
+      struct timespec start, end;
+      if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
+        goto done;
+      }
       if (auris_srp_apply(srp, fft, &spectrum, &output) != AURIS_OK) {
         fprintf(stderr, "SRP failed\n");
         goto done;
       }
+      if (clock_gettime(CLOCK_MONOTONIC, &end) != 0) {
+        goto done;
+      }
+      const double ms = elapsed_ms(start, end);
+      srp_total_ms += ms;
+      if (ms > srp_max_ms) {
+        srp_max_ms = ms;
+      }
+      ++srp_calls;
     }
     if (!gate.active || !output.valid) {
       output = (auris_srp_result_t){0};
@@ -243,6 +272,16 @@ int main(int argc, char **argv) {
               : !gate.active  ? "closed"
               : gate.evidence ? "active"
                               : "holding");
+      fprintf(stderr, "grid %ux%u step %u | evaluated %zu/%zu | %s\n",
+              COLUMNS, ROWS, SEARCH_STEP, output.evaluated, output.directions,
+              output.approximate ? "approximate map" : "exhaustive map");
+      if (srp_calls > 0U) {
+        fprintf(stderr, "SRP mean %.3f ms, max %.3f ms over %zu calls\n",
+                srp_total_ms / (double)srp_calls, srp_max_ms, srp_calls);
+      }
+      srp_total_ms = 0.0;
+      srp_max_ms = 0.0;
+      srp_calls = 0U;
       next_report = analysis.first_frame + (uint64_t)AURIS_ALSA_RATE;
     }
 
