@@ -1,12 +1,12 @@
-#include "auris_activity.h"
 #include "auris_alsa.h"
-#include "auris_array_configs.h"
 #include "auris_camera.h"
 #include "auris_outputs.h"
 #include "auris_ui.h"
+#include "auris_wav.h"
 #include "auris_overlay.h"
 #include "auris_srp.h"
 #include "auris_timeline.h"
+#include "imager_audio.h"
 #include "imager_calibration.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -25,7 +25,6 @@
 #define DIRECTIONS (COLUMNS * ROWS)
 #define MAX_AGE_US 250000U
 #define MAX_SKEW_US 100000U
-#define AUDIO_HISTORY 32U
 
 _Static_assert(DIRECTIONS <= AURIS_SRP_MAX_DIRECTIONS, "grid too large");
 
@@ -41,22 +40,20 @@ static uint64_t now_us(void) {
 typedef struct {
   float scores[DIRECTIONS];
   size_t best;
-  bool valid;
-  bool evidence;
+  float column, row; /* the estimate in grid coordinates, between cells */
+  float strength;    /* 0..1 drawing strength */
+  bool valid;        /* there is a map to draw */
+  bool evidence;     /* this frame added evidence (not a held estimate) */
   uint64_t published_us, sample_us, dsp_us;
 } snapshot_t;
 
 typedef struct {
   pthread_mutex_t mutex;
   atomic_bool stop, failed;
-  snapshot_t history[AUDIO_HISTORY];
-  size_t history_next, history_count;
-  const char *device;
-  const auris_array_t *array;
-  auris_fft_t *fft;
-  auris_srp_t *srp;
-  auris_preprocess_t prep;
-  auris_activity_t activity;
+  snapshot_t history[IMAGER_HISTORY_MAX];
+  size_t history_next, history_count, history_capacity;
+  imager_dsp_t dsp; /* worker-owned after start */
+  const char *audio_file; /* replay this recording instead of capturing */
   const auris_vec3f_t *directions;
   imager_calibration_capture_t collection;
   auris_settings_t settings; /* Protected by mutex; DSP objects stay worker-owned. */
@@ -66,38 +63,78 @@ typedef struct {
 
 static void *audio_worker(void *context) {
   audio_t *a = context;
+  const imager_audio_plan_t *plan = &a->dsp.plan;
+  const auris_array_t *array = plan->config.array;
   auris_alsa_t capture = {0};
+  auris_wav_reader_t recording = {0};
   auris_audio_source_t source = {&capture, auris_alsa_read};
-  int err = auris_alsa_open(&capture, a->device, a->array->capture_channels,
-                           a->array->microphone_count);
-  if (err < 0) goto done;
-  /* A stalled device must not trap shutdown inside a blocking read. */
-  err = snd_pcm_nonblock(capture.pcm, 1);
-  if (err < 0) goto done;
-  auris_framer_t framer;
-  auris_framer_reset(&framer);
-  auris_audio_block_t block;
-  auris_analysis_frame_t analysis;
-  auris_spectrum_t spectrum;
-  auris_srp_result_t result = {0};
-  uint64_t last_audio = now_us(), next_report = 0U, evidence_us = 0U;
+  const bool replay = a->audio_file != NULL;
+  uint64_t replay_start = 0U; /* clock time of the recording's first sample */
+  int err;
+  if (replay) {
+    err = auris_wav_open(&recording, a->audio_file, plan->config.capture,
+                         array->capture_channels, array->microphone_count);
+    if (err < 0) goto done;
+    source = (auris_audio_source_t){&recording, auris_wav_read};
+    replay_start = now_us();
+  } else {
+    err = auris_alsa_open_profile(&capture, plan->config.capture, plan->device,
+                                  array->capture_channels,
+                                  array->microphone_count);
+    if (err < 0) goto done;
+    /* A stalled device must not trap shutdown inside a blocking read. */
+    err = snd_pcm_nonblock(capture.pcm, 1);
+    if (err < 0) goto done;
+  }
+  static auris_framer_t framer;
+  static auris_audio_block_t block;
+  static auris_analysis_frame_t analysis;
+  static auris_srp_result_t result;
+  err = -EINVAL;
+  if (auris_framer_init(&framer, plan->frame_size, plan->frame_hop) != AURIS_OK)
+    goto done;
+  err = 0;
+  uint64_t last_audio = now_us(), next_report = 0U;
   while (!atomic_load(&a->stop)) {
-    err = snd_pcm_wait(capture.pcm, 100);
-    if (err == -EINTR) continue;
-    if (err < 0) break;
-    if (now_us() - last_audio > 1000000U) { err = -ETIMEDOUT; break; }
-    if (err == 0) continue;
-    const snd_pcm_sframes_t available = snd_pcm_avail_update(capture.pcm);
-    if (available < 0) { err = (int)available; break; }
-    if (available < (snd_pcm_sframes_t)AURIS_AUDIO_FRAMES) {
-      const struct timespec pause = {.tv_nsec = 1000000L};
-      (void)nanosleep(&pause, NULL);
-      continue;
+    if (replay) {
+      /* A recording is played at its own pace, over and over: each block
+         becomes available when its last sample would have been heard. */
+      err = -EIO;
+      if (source.read(source.context, &block) != AURIS_OK) break;
+      if (block.frames == 0U) {
+        auris_wav_close(&recording);
+        err = auris_wav_open(&recording, a->audio_file, plan->config.capture,
+                             array->capture_channels, array->microphone_count);
+        if (err < 0) break;
+        auris_framer_restart(&framer);
+        replay_start = now_us();
+        continue;
+      }
+      const uint64_t due = replay_start + (block.first_frame + block.frames) *
+                                              1000000U / plan->rate;
+      while (!atomic_load(&a->stop) && now_us() < due) {
+        const uint64_t left = due - now_us();
+        const struct timespec pause = {.tv_nsec = (long)(left > 5000U ? 5000U : left) * 1000L};
+        (void)nanosleep(&pause, NULL);
+      }
+    } else {
+      err = snd_pcm_wait(capture.pcm, 100);
+      if (err == -EINTR) continue;
+      if (err < 0) break;
+      if (now_us() - last_audio > 1000000U) { err = -ETIMEDOUT; break; }
+      if (err == 0) continue;
+      const snd_pcm_sframes_t available = snd_pcm_avail_update(capture.pcm);
+      if (available < 0) { err = (int)available; break; }
+      if (available < (snd_pcm_sframes_t)AURIS_AUDIO_FRAMES) {
+        const struct timespec pause = {.tv_nsec = 1000000L};
+        (void)nanosleep(&pause, NULL);
+        continue;
+      }
+      /* There is one reader and a whole block is available. Unexpected short
+         reads/EAGAIN fail closed; we never silently bridge a discontinuity. */
+      err = -EIO;
+      if (source.read(source.context, &block) != AURIS_OK) break;
     }
-    /* There is one reader and a whole block is available. Unexpected short
-       reads/EAGAIN fail closed; we never silently bridge a discontinuity. */
-    err = -EIO;
-    if (source.read(source.context, &block) != AURIS_OK) break;
     last_audio = now_us();
     bool ready;
     if (auris_framer_push(&framer, &block, &analysis, &ready) != AURIS_OK) break;
@@ -107,71 +144,76 @@ static void *audio_worker(void *context) {
     (void)pthread_mutex_lock(&a->mutex);
     desired=a->settings;
     (void)pthread_mutex_unlock(&a->mutex);
-    if (desired.gating!=a->activity.enabled || desired.smoothing!=a->smoothing_applied) {
-      if (desired.gating!=a->activity.enabled) {
-        a->activity.enabled=desired.gating;
-        auris_activity_reset(&a->activity);
+    if (desired.gating!=a->dsp.activity.enabled || desired.smoothing!=a->smoothing_applied) {
+      if (desired.gating!=a->dsp.activity.enabled) {
+        a->dsp.activity.enabled=desired.gating;
+        auris_activity_reset(&a->dsp.activity);
       }
-      if (auris_srp_set_smoothing(a->srp,desired.smoothing ? 0.100f:0.0f)!=AURIS_OK) {
+      if (imager_dsp_set_smoothing(&a->dsp,desired.smoothing)!=AURIS_OK) {
         err=-EINVAL; break;
       }
       a->smoothing_applied=desired.smoothing;
-      result.valid=false; evidence_us=0U;
+      result.valid=false;
       (void)pthread_mutex_lock(&a->mutex);
       a->history_count=0U; a->history_next=0U;
       (void)pthread_mutex_unlock(&a->mutex);
     }
     /* Estimate the analysis-centre time using the capture delay after read.
        This is a host/ALSA estimate, not an ADC hardware timestamp. */
-    const uint64_t query_start = now_us();
-    snd_pcm_sframes_t queued, delayed;
-    const int timing = snd_pcm_avail_delay(capture.pcm, &queued, &delayed);
-    const uint64_t query_end = now_us();
     uint64_t centre_us = 0U;
-    if (timing == 0 && delayed >= 0 && delayed < (snd_pcm_sframes_t)AURIS_ALSA_RATE &&
+    const uint64_t query_start = now_us();
+    snd_pcm_sframes_t queued = 0, delayed = 0;
+    const int timing = replay ? -1
+                              : snd_pcm_avail_delay(capture.pcm, &queued, &delayed);
+    const uint64_t query_end = now_us();
+    if (replay) {
+      centre_us = replay_start + (analysis.first_frame + plan->frame_size / 2U) *
+                                     1000000U / plan->rate;
+    } else if (timing == 0 && delayed >= 0 && delayed < (snd_pcm_sframes_t)plan->rate &&
         query_end - query_start <= 5000U) {
       const uint64_t behind = block.first_frame + block.frames -
-                              (analysis.first_frame + AURIS_ANALYSIS_SIZE / 2U);
-      const uint64_t offset = ((uint64_t)delayed + behind) * 1000000U / AURIS_ALSA_RATE;
+                              (analysis.first_frame + plan->frame_size / 2U);
+      const uint64_t offset = ((uint64_t)delayed + behind) * 1000000U / plan->rate;
       const uint64_t at = query_start + (query_end - query_start) / 2U;
       if (at > offset) centre_us = at - offset;
     }
     const uint64_t dsp_start = now_us();
     auris_activity_result_t gate;
     err = -EIO;
-    if (auris_preprocess_apply(&a->prep, &analysis) != AURIS_OK ||
-        auris_spectrum_apply(a->fft, &analysis, &spectrum) != AURIS_OK ||
-        auris_activity_apply(&a->activity, &spectrum, &gate) != AURIS_OK) break;
-    if (gate.active && gate.evidence &&
-        auris_srp_apply(a->srp, a->fft, &spectrum, &result) != AURIS_OK) break;
-    if (gate.active && gate.evidence) evidence_us = centre_us;
-    if (!gate.active || !result.valid) {
-      result.valid = false;
-      evidence_us = 0U;
-      auris_srp_reset(a->srp);
-    }
-    snapshot_t next = {.best = result.best, .valid = result.valid,
-                       .evidence = gate.active && gate.evidence && result.valid,
-                       .published_us = now_us(), .sample_us = evidence_us};
+    imager_view_t view;
+    if (imager_dsp_process(&a->dsp, &analysis, &gate, &result, &view) != AURIS_OK) break;
+    /* A held estimate is as current as the frame that kept it, so every
+       drawable frame carries its own time, fresh or not. */
+    snapshot_t next = {.best = view.best, .column = view.column, .row = view.row,
+                       .strength = view.strength, .valid = view.valid,
+                       .evidence = view.valid && view.fresh,
+                       .published_us = now_us(),
+                       .sample_us = view.valid ? centre_us : 0U};
     next.dsp_us = next.published_us - dsp_start;
-    if (next.valid) memcpy(next.scores, result.scores, sizeof(next.scores));
+    if (next.valid) memcpy(next.scores, view.map, sizeof(next.scores));
     (void)pthread_mutex_lock(&a->mutex);
     a->status=(auris_ui_status_t){.dbfs=gate.level_dbfs,
         .contrast=next.evidence ? result.contrast:0.0f,.ready=gate.ready,
         .active=gate.active,.evidence=gate.evidence};
     a->history[a->history_next] = next;
-    a->history_next = (a->history_next + 1U) % AUDIO_HISTORY;
-    if (a->history_count < AUDIO_HISTORY) ++a->history_count;
-    const size_t col = result.best % COLUMNS, row = result.best / COLUMNS;
-    const bool usable = next.evidence && result.contrast >= 0.05f &&
+    a->history_next = (a->history_next + 1U) % a->history_capacity;
+    if (a->history_count < a->history_capacity) ++a->history_count;
+    const size_t col = view.best % COLUMNS, row = view.best / COLUMNS;
+    const bool sure = a->dsp.tracking ? view.confidence >= 0.5f
+                                      : result.contrast >= 0.05f;
+    const bool usable = next.evidence && sure &&
                          col > 0U && col + 1U < COLUMNS && row > 0U && row + 1U < ROWS;
-    imager_calibration_feed(&a->collection, a->directions[result.best], centre_us,
+    imager_calibration_feed(&a->collection, a->directions[view.best], centre_us,
                             next.published_us, usable);
     (void)pthread_mutex_unlock(&a->mutex);
     if (next.published_us >= next_report) {
-      fprintf(stderr, "audio %.1f dBFS | %s\n", (double)gate.level_dbfs,
+      fprintf(stderr, "audio %.1f dBFS (noise %.1f, %.1f bins) | %s | %s\n",
+              (double)gate.level_dbfs, (double)gate.noise_dbfs,
+              (double)gate.weight_sum,
+              !a->dsp.activity.enabled ? "gate off" :
               !gate.ready ? "calibrating" : !gate.active ? "closed" :
-              gate.evidence ? "active" : "holding");
+              gate.evidence ? "active" : "holding",
+              view.valid ? "shown" : "hidden");
       next_report = next.published_us + 1000000U;
     }
     err = 0;
@@ -182,6 +224,7 @@ done:
     atomic_store(&a->failed, true);
   }
   auris_alsa_close(&capture);
+  auris_wav_close(&recording);
   return NULL;
 }
 
@@ -190,12 +233,12 @@ static snapshot_t match_audio(audio_t *audio, uint64_t camera_us,
   snapshot_t match = {0};
   if (!monotonic || camera_us == 0U || camera_us > composed_us) return match;
   (void)pthread_mutex_lock(&audio->mutex);
-  auris_timeline_point_t points[AUDIO_HISTORY];
+  auris_timeline_point_t points[IMAGER_HISTORY_MAX];
   for (size_t i = 0U; i < audio->history_count; ++i) {
     const snapshot_t *candidate = &audio->history[i];
     points[i] = (auris_timeline_point_t){candidate->sample_us,
                                          candidate->published_us,
-                                         candidate->valid && candidate->evidence};
+                                         candidate->valid};
   }
   const size_t selected = auris_timeline_match(
       points, audio->history_count, camera_us, composed_us, MAX_AGE_US,
@@ -260,7 +303,10 @@ int main(int argc, char **argv) {
   bool no_ui=false, fps_override=false;
   const char *settings_path="configs/runtime_settings.txt", *touch_path=NULL;
   unsigned long fps = 15U;
-  const char *device = NULL, *calibration_path = "configs/camera_calibration.txt";
+  const char *calibration_path = "configs/camera_calibration.txt";
+  imager_audio_options_t audio_options = {.array = "respeaker", .step = 1U};
+  const char *audio_file = NULL;
+  bool usage_error = false;
   for (int i = 1; i < argc; ++i) {
     int parsed=auris_outputs_option(&outputs,argc,argv,&i);
     if (parsed<0) {
@@ -280,16 +326,46 @@ int main(int argc, char **argv) {
       fps = strtoul(argv[++i], &end, 10);
       fps_override=true;
       if (errno != 0 || end == argv[i] || *end != '\0' || fps < 1U || fps > 30U) {
-        fprintf(stderr, "usage: %s [--calibrate] [--calibration FILE] [--fps 1..30] ALSA_DEVICE\n", argv[0]);
-        return EXIT_FAILURE;
+        usage_error = true; break;
       }
     }
-    else if (argv[i][0] != '-' && device == NULL) device = argv[i];
-    else { device = NULL; break; }
+    else if (strcmp(argv[i], "--no-track") == 0) audio_options.tracking = -1;
+    else if (strcmp(argv[i], "--audio-file") == 0 && i + 1 < argc) audio_file = argv[++i];
+    else if (strcmp(argv[i], "--array") == 0 && i + 1 < argc) audio_options.array = argv[++i];
+    else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) audio_options.device = argv[++i];
+    else if (strcmp(argv[i], "--band") == 0 && i + 2 < argc) {
+      char *end1 = NULL, *end2 = NULL;
+      audio_options.band_low_hz = strtof(argv[i + 1], &end1);
+      audio_options.band_high_hz = strtof(argv[i + 2], &end2);
+      audio_options.band_given = true;
+      if (*end1 != '\0' || *end2 != '\0' || end1 == argv[i + 1] || end2 == argv[i + 2]) {
+        usage_error = true; break;
+      }
+      i += 2;
+    }
+    else if (strcmp(argv[i], "--step") == 0 && i + 1 < argc) {
+      char *end = NULL;
+      audio_options.step = strtoul(argv[++i], &end, 10);
+      if (end == argv[i] || *end != '\0') { usage_error = true; break; }
+    }
+    /* A bare ALSA device name: the original ReSpeaker form. */
+    else if (argv[i][0] != '-' && audio_options.device == NULL) audio_options.device = argv[i];
+    else { usage_error = true; break; }
   }
-  if (device == NULL) {
+  imager_audio_plan_t plan;
+  if (!usage_error && imager_audio_plan(&audio_options, &plan) < 0) {
+    fprintf(stderr, "unknown array, or bad --band/--step (band 0 <= LO < HI <= Nyquist, step 1, 2 or 4)\n");
+    usage_error = true;
+  }
+  if (usage_error) {
     fprintf(stderr,"runtime: [--settings FILE] [--no-ui] [--touch-device PATH]; touch UI defaults on with display, off during calibration\n");
-    fprintf(stderr, "usage: %s [--calibrate] [--calibration FILE] [--fps 1..30] ALSA_DEVICE\n", argv[0]);
+    fprintf(stderr, "usage: %s [--calibrate] [--calibration FILE] [--fps 1..30]\n"
+                    "          [--array NAME] [--device D] [--band LO HI] [--step 1|2|4]"
+                    " [--no-track]\n"
+                    "          [--audio-file REC.wav]   (replay a recording, looped, with the live camera)\n"
+                    "       %s [options] ALSA_DEVICE   (ReSpeaker form)\n"
+                    "  NAME: %s; the device, band and frame come from the array's profile\n",
+            argv[0], argv[0], auris_config_names());
     return EXIT_FAILURE;
   }
   auris_settings_t settings=auris_settings_defaults();
@@ -331,10 +407,13 @@ int main(int argc, char **argv) {
                         {-0.70196f, 2.76426f, -1.06231f},
                         {-0.25157f, -0.71978f, 1.97135f}},
       .auto_white_balance = true, .auto_exposure = true};
-  audio_t audio = {.mutex = PTHREAD_MUTEX_INITIALIZER,
-                   .device = device, .array = auris_config_respeaker_usb_4(),
-                   .settings=settings,.smoothing_applied=settings.smoothing,
-                   .status={.dbfs=-120.0f}};
+  /* Static: the map history alone is about 0.8 MB. */
+  static audio_t audio = {.mutex = PTHREAD_MUTEX_INITIALIZER};
+  audio.settings = settings;
+  audio.smoothing_applied = settings.smoothing;
+  audio.status = (auris_ui_status_t){.dbfs = -120.0f};
+  audio.history_capacity = plan.history;
+  audio.audio_file = audio_file;
   atomic_init(&audio.stop, false);
   atomic_init(&audio.failed, false);
   auris_camera_t *camera = NULL;
@@ -350,7 +429,7 @@ int main(int argc, char **argv) {
   pthread_t thread;
   bool started = false;
   int result = EXIT_FAILURE, err = 0, stdin_flags = -1;
-  session.array_id = auris_calibration_array_id(audio.array);
+  session.array_id = auris_calibration_array_id(plan.config.array);
   err = auris_camera_calibration_load(calibration_path, session.array_id, &camera_view);
   if (err == -ENOENT) {
     fprintf(stderr, "CAL no saved rotation; using nominal alignment\n");
@@ -368,20 +447,19 @@ int main(int argc, char **argv) {
   if (auris_view_grid(&search, COLUMNS, ROWS, directions, DIRECTIONS) != AURIS_OK)
     goto done;
   audio.directions = directions;
-  audio.fft = auris_fft_create();
-  audio.srp = auris_srp_create(audio.array, AURIS_ALSA_RATE, directions, DIRECTIONS);
-  if (audio.fft == NULL || audio.srp == NULL) goto done;
-  if (auris_srp_set_grid(audio.srp, COLUMNS, ROWS, 1U) != AURIS_OK ||
-      auris_srp_set_smoothing(audio.srp, settings.smoothing ? 0.100f : 0.0f) != AURIS_OK) goto done;
-  auris_preprocess_init(&audio.prep);
-  float energy = 0.0f;
-  for (size_t n = 0U; n < AURIS_ANALYSIS_SIZE; ++n)
-    energy += audio.prep.window[n] * audio.prep.window[n];
-  auris_activity_config_t gate = auris_activity_defaults();
-  gate.enabled = settings.gating;
-  if (auris_activity_init(&audio.activity, &gate, AURIS_ALSA_RATE,
-                          audio.array->microphone_count, energy) != AURIS_OK)
-    goto done;
+  err = imager_dsp_open(&audio.dsp, &plan, directions, COLUMNS, ROWS,
+                        settings.gating, settings.smoothing);
+  if (err < 0) goto done;
+  fprintf(stderr, "audio: %s on %s, %zu-sample frames every %zu (%.1f ms), "
+          "band %.0f-%.0f Hz, %s, %s, search step %zu, %zu maps kept\n",
+          plan.config.array->name, plan.device, plan.frame_size, plan.frame_hop,
+          1000.0 * (double)plan.frame_hop / (double)plan.rate,
+          (double)plan.band_low_hz, (double)plan.band_high_hz,
+          plan.weighting ? "bins weighted by SNR" : "level gate",
+          !settings.smoothing ? "raw maps (smoothing off)"
+          : plan.tracking ? "tracked, held 0.6 s"
+                          : "0.1 s smoothing (tracker off)",
+          plan.step, plan.history);
   err = auris_camera_open(&camera, &capture);
   if (err < 0) goto done;
   const auris_camera_format_t *format = auris_camera_format(camera);
@@ -518,8 +596,10 @@ int main(int argc, char **argv) {
         (frame.timestamp_us > latest.sample_us ? frame.timestamp_us - latest.sample_us
                                                : latest.sample_us - frame.timestamp_us);
     const bool visible = latest.valid && settings.overlay;
-    err = auris_overlay_apply(session.overlay, latest.scores, DIRECTIONS, latest.best,
-                               visible, &canvas);
+    err = auris_overlay_draw(session.overlay, latest.scores, DIRECTIONS,
+                              visible ? latest.column : 0.0f,
+                              visible ? latest.row : 0.0f,
+                              visible ? latest.strength : 0.0f, &canvas);
     if (err < 0) goto done;
     ++fps_frames;
     if (composed-fps_start>=1000000U) {
@@ -600,8 +680,7 @@ done:
   auris_overlay_close(session.overlay);
   auris_image_close(image);
   free(rgb);
-  auris_srp_destroy(audio.srp);
-  auris_fft_destroy(audio.fft);
+  imager_dsp_close(&audio.dsp);
   (void)pthread_mutex_destroy(&audio.mutex);
   if (stdin_flags >= 0) (void)fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
   return running ? result : EXIT_SUCCESS;
