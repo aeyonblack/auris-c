@@ -98,9 +98,37 @@ target_link_libraries(auris_calibration_session PUBLIC auris_config auris_overla
 auris_set_warnings(auris_calibration_session)
 auris_enable_sanitizers(auris_calibration_session)
 
+add_library(auris_imager_audio STATIC imager_audio.c)
+target_include_directories(auris_imager_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(auris_imager_audio PUBLIC auris_core auris_config)
+auris_set_warnings(auris_imager_audio)
+auris_enable_sanitizers(auris_imager_audio)
+
 add_executable(imager_scope imager_scope.c)
-target_link_libraries(imager_scope PRIVATE auris_audio auris_config
+target_link_libraries(imager_scope PRIVATE auris_audio auris_config auris_imager_audio
   auris_camera auris_calibration_session auris_outputs auris_control Threads::Threads)
 target_compile_definitions(imager_scope PRIVATE _POSIX_C_SOURCE=200809L)
 auris_set_warnings(imager_scope)
 auris_enable_sanitizers(imager_scope)
+
+add_executable(cmb_adc_setup cmb_adc_setup.c)
+target_link_libraries(cmb_adc_setup PRIVATE auris_adc)
+target_compile_definitions(cmb_adc_setup PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(cmb_adc_setup)
+auris_enable_sanitizers(cmb_adc_setup)
+
+add_executable(cmb_record cmb_record.c)
+target_link_libraries(cmb_record PRIVATE auris_audio auris_config)
+auris_set_warnings(cmb_record)
+auris_enable_sanitizers(cmb_record)
+
+add_executable(activity_scope activity_scope.c)
+target_link_libraries(activity_scope PRIVATE auris_audio auris_config)
+target_compile_definitions(activity_scope PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(activity_scope)
+auris_enable_sanitizers(activity_scope)
+
+add_executable(eval_replay eval_replay.c)
+target_link_libraries(eval_replay PRIVATE auris_audio auris_imager_audio)
+auris_set_warnings(eval_replay)
+auris_enable_sanitizers(eval_replay)
