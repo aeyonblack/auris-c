@@ -16,7 +16,7 @@
 static auris_status_t step(auris_activity_t *state, float db, size_t bin,
                            auris_activity_result_t *out) {
   auris_spectrum_t spectrum = {
-      .sample_rate = 16000U, .channels = 4U, .first_frame = state->next_frame};
+      .size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 4U, .first_frame = state->next_frame};
   const float power = powf(10.0f, db / 10.0f);
   const float magnitude = sqrtf(power * 512.0f * 191.625f / 2.0f);
   for (size_t m = 0U; m < 4U; ++m) {
@@ -71,7 +71,7 @@ int main(void) {
   }
   CHECK(step(&state, -45.0f, 32U, &out) == AURIS_OK && !out.active);
   CHECK(step(&state, -45.0f, 32U, &out) == AURIS_OK && out.active);
-  auris_spectrum_t gap = {.sample_rate = 16000U,
+  auris_spectrum_t gap = {.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U,
                           .channels = 4U,
                           .first_frame = state.next_frame + 256U};
   CHECK(auris_activity_apply(&state, &gap, &out) == AURIS_OK && !out.ready &&
