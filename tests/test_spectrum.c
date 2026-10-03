@@ -15,7 +15,7 @@
 int main(void) {
   int result = EXIT_FAILURE;
   auris_fft_t *fft = auris_fft_create();
-  auris_analysis_frame_t frame = {.sample_rate = 16000U, .channels = 2U};
+  auris_analysis_frame_t frame = {.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 2U};
   auris_spectrum_t spectrum;
   auris_gcc_t gcc;
   auris_preprocess_t prep;
@@ -41,7 +41,7 @@ int main(void) {
 
   /* Test both delay signs and zero with impulses away from edges. */
   for (int delay = -3; delay <= 3; ++delay) {
-    frame = (auris_analysis_frame_t){.sample_rate = 16000U, .channels = 2U};
+    frame = (auris_analysis_frame_t){.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 2U};
     frame.samples[0][200] = 0.5f;
     frame.samples[1][(size_t)(200 + delay)] = 0.5f;
     CHECK(auris_spectrum_apply(fft, &frame, &spectrum) == AURIS_OK);
@@ -54,7 +54,7 @@ int main(void) {
 
   /* Broadband, delayed, DC-biased input through real preprocessing. */
   frame = (auris_analysis_frame_t){
-      .sample_rate = 16000U, .channels = 2U, .first_frame = 256U};
+      .size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 2U, .first_frame = 256U};
   uint32_t seed = 1U;
   for (size_t n = 0U; n < AURIS_ANALYSIS_SIZE; ++n) {
     seed = seed * UINT32_C(1664525) + UINT32_C(1013904223);
@@ -68,7 +68,7 @@ int main(void) {
   CHECK(auris_gcc_phat(fft, &spectrum, 0U, 1U, 8, &gcc) == AURIS_OK);
   CHECK(gcc.valid && gcc.lag_samples == 3);
 
-  frame = (auris_analysis_frame_t){.sample_rate = 16000U, .channels = 2U};
+  frame = (auris_analysis_frame_t){.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 2U};
   CHECK(auris_spectrum_apply(fft, &frame, &spectrum) == AURIS_OK);
   CHECK(auris_gcc_phat(fft, &spectrum, 0U, 1U, 8, &gcc) == AURIS_OK);
   CHECK(!gcc.valid);
