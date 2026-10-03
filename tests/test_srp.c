@@ -34,7 +34,7 @@ int main(void) {
   }
   srp = auris_srp_create(array, 16000U, grid, 360U);
   CHECK(fft != NULL && srp != NULL);
-  auris_spectrum_t spectrum = {.sample_rate = 16000U, .channels = 4U};
+  auris_spectrum_t spectrum = {.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 4U};
   auris_srp_result_t out;
   float fine[AURIS_GCC_SIZE];
   bool valid = false;
@@ -90,7 +90,7 @@ int main(void) {
   auris_preprocess_init(&prep);
   for (size_t t = 0U; t < sizeof(targets) / sizeof(targets[0]); ++t) {
     const auris_vec3f_t u = direction(targets[t]);
-    auris_analysis_frame_t frame = {.sample_rate = 16000U, .channels = 4U};
+    auris_analysis_frame_t frame = {.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 4U};
     for (size_t m = 0U; m < 4U; ++m) {
       const auris_vec3f_t p = array->positions[m];
       const double advance = (double)(p.x_m * u.x_m + p.y_m * u.y_m) /
@@ -112,7 +112,7 @@ int main(void) {
     CHECK(out.valid && angle_error(out.best, targets[t]) <= 3.0f);
   }
 
-  spectrum = (auris_spectrum_t){.sample_rate = 16000U, .channels = 4U};
+  spectrum = (auris_spectrum_t){.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 4U};
   CHECK(auris_srp_apply(srp, fft, &spectrum, &out) == AURIS_OK);
   CHECK(!out.valid && out.peak == 0.0f);
   spectrum.sample_rate = 48000U;

@@ -16,7 +16,7 @@
 
 static void source_spectrum(const auris_array_t *array, auris_vec3f_t ray,
                             auris_spectrum_t *out) {
-  *out = (auris_spectrum_t){.sample_rate = 16000U,
+  *out = (auris_spectrum_t){.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U,
                             .channels = array->microphone_count};
   for (size_t m = 0U; m < out->channels; ++m) {
     const auris_vec3f_t p = array->positions[m];
@@ -106,7 +106,7 @@ int main(void) {
   source_spectrum(array, ray, &spectrum);
   CHECK(auris_srp_apply(srp, fft, &spectrum, &out) == AURIS_OK);
   CHECK(out.best == front_best && fabsf(out.peak - front_peak) < 1.0e-6f);
-  spectrum = (auris_spectrum_t){.sample_rate = 16000U, .channels = 4U};
+  spectrum = (auris_spectrum_t){.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 4U};
   CHECK(auris_srp_apply(srp, fft, &spectrum, &out) == AURIS_OK);
   CHECK(!out.valid);
   puts("view tests: ok");

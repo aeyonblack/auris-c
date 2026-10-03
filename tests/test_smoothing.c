@@ -17,7 +17,7 @@
 static void source(auris_spectrum_t *s, const auris_array_t *array,
                    auris_vec3f_t u, uint64_t first) {
   *s = (auris_spectrum_t){
-      .sample_rate = 16000U, .channels = 4U, .first_frame = first};
+      .size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 4U, .first_frame = first};
   for (size_t m = 0U; m < 4U; ++m) {
     const auris_vec3f_t p = array->positions[m];
     const float advance = 16000.0f / array->speed_of_sound_mps *
@@ -77,7 +77,7 @@ int main(void) {
   auris_activity_t activity = {0};
   CHECK(auris_activity_init(&activity, &config, 16000U, 4U, window_energy) ==
         AURIS_OK);
-  auris_analysis_frame_t frame = {.sample_rate = 16000U, .channels = 4U};
+  auris_analysis_frame_t frame = {.size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 4U};
   for (size_t m = 0U; m < 4U; ++m) {
     for (size_t n = 0U; n < 512U; ++n) {
       frame.samples[m][n] =

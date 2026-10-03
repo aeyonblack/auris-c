@@ -32,7 +32,7 @@ static void make_spectrum(const auris_array_t *array, float x, float y,
                     y / 48.0f * 479.0f, &ray) != AURIS_OK) {
     abort();
   }
-  *spectrum = (auris_spectrum_t){.sample_rate=16000U, .channels=4U};
+  *spectrum = (auris_spectrum_t){.size = AURIS_ANALYSIS_SIZE, .sample_rate=16000U, .channels=4U};
   for (size_t m=0U; m<4U; ++m) {
     const auris_vec3f_t p = array->positions[m];
     const float advance = 16000.0f / array->speed_of_sound_mps *
@@ -108,7 +108,7 @@ int main(void) {
     CHECK(auris_srp_apply(fast,fft,&spectrum,&b)==AURIS_OK);
     CHECK(a.best==b.best);
   }
-  spectrum=(auris_spectrum_t){.sample_rate=16000U,.channels=4U};
+  spectrum=(auris_spectrum_t){.size = AURIS_ANALYSIS_SIZE, .sample_rate=16000U,.channels=4U};
   auris_srp_reset(dense); auris_srp_reset(fast);
   CHECK(auris_srp_apply(fast,fft,&spectrum,&b)==AURIS_OK);
   CHECK(!b.valid && b.best==0U && b.peak==0.0f);

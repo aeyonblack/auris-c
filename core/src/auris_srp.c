@@ -22,9 +22,11 @@ struct auris_srp {
   auris_mic_pair_t pairs[AURIS_SRP_MAX_PAIRS];
   auris_vec3f_t directions[AURIS_SRP_MAX_DIRECTIONS];
   lookup_t *table;
-  float curves[AURIS_SRP_MAX_PAIRS][AURIS_GCC_SIZE];
-  float scratch[AURIS_GCC_SIZE];
+  size_t frame_size, frame_hop, upsample, curve_size;
+  float *curves;  /* pair_count rows of curve_size floats */
+  float *scratch; /* curve_size floats */
   float smoothing_alpha;
+  float weight; /* smoothed mean pair weight, in bins */
   uint64_t next_frame;
   bool history_ready;
 };
@@ -43,7 +45,7 @@ auris_status_t auris_srp_set_smoothing(auris_srp_t *s, float seconds) {
   if (s == NULL || !isfinite(seconds) || seconds < 0.0f || seconds > 60.0f) {
     return AURIS_ERROR_INVALID_ARGUMENT;
   }
-  const float dt = (float)AURIS_ANALYSIS_HOP / (float)s->sample_rate;
+  const float dt = (float)s->frame_hop / (float)s->sample_rate;
   s->smoothing_alpha = seconds == 0.0f ? 1.0f : -expm1f(-dt / seconds);
   auris_srp_reset(s);
   return AURIS_OK;
@@ -52,15 +54,22 @@ auris_status_t auris_srp_set_smoothing(auris_srp_t *s, float seconds) {
 void auris_srp_destroy(auris_srp_t *state) {
   if (state != NULL) {
     free(state->table);
+    free(state->curves);
+    free(state->scratch);
     free(state);
   }
 }
 
-auris_srp_t *auris_srp_create(const auris_array_t *array,
-                              unsigned int sample_rate,
-                              const auris_vec3f_t *directions, size_t count) {
+auris_srp_t *auris_srp_create_sized(const auris_array_t *array,
+                                    unsigned int sample_rate,
+                                    size_t frame_size, size_t frame_hop,
+                                    size_t upsample,
+                                    const auris_vec3f_t *directions,
+                                    size_t count) {
   if (auris_array_validate(array) != AURIS_OK ||
       array->microphone_count > AURIS_AUDIO_CHANNELS || sample_rate == 0U ||
+      !auris_analysis_size_valid(frame_size, frame_hop) ||
+      (upsample != 1U && upsample != 2U && upsample != 4U && upsample != 8U) ||
       directions == NULL || count < 2U || count > AURIS_SRP_MAX_DIRECTIONS) {
     return NULL;
   }
@@ -75,6 +84,10 @@ auris_srp_t *auris_srp_create(const auris_array_t *array,
     return NULL;
   }
   s->sample_rate = sample_rate;
+  s->frame_size = frame_size;
+  s->frame_hop = frame_hop;
+  s->upsample = upsample;
+  s->curve_size = frame_size * upsample;
   s->smoothing_alpha = 1.0f;
   s->channels = array->microphone_count;
   s->count = count;
@@ -85,15 +98,17 @@ auris_srp_t *auris_srp_create(const auris_array_t *array,
     return NULL;
   }
   s->table = calloc(count * s->pair_count, sizeof(*s->table));
-  if (s->table == NULL) {
+  s->curves = calloc(s->pair_count * s->curve_size, sizeof(*s->curves));
+  s->scratch = calloc(s->curve_size, sizeof(*s->scratch));
+  if (s->table == NULL || s->curves == NULL || s->scratch == NULL) {
     auris_srp_destroy(s);
     return NULL;
   }
   const float scale = (float)sample_rate / array->speed_of_sound_mps;
   for (size_t p = 0U; p < s->pair_count; ++p) {
+    /* Circular lags beyond half the frame would alias. */
     if (!isfinite(s->pairs[p].distance_m * scale) ||
-        s->pairs[p].distance_m * scale >=
-            (float)AURIS_ANALYSIS_SIZE / 2.0f - 1.0f) {
+        s->pairs[p].distance_m * scale >= (float)frame_size / 2.0f - 1.0f) {
       auris_srp_destroy(s);
       return NULL;
     }
@@ -103,21 +118,31 @@ auris_srp_t *auris_srp_create(const auris_array_t *array,
                                     b.z_m - a.z_m};
     for (size_t q = 0U; q < count; ++q) {
       const float lag = -scale * dot(baseline, directions[q]);
-      const float fine = lag * (float)AURIS_GCC_UPSAMPLE;
+      const float fine = lag * (float)upsample;
       const int left = (int)floorf(fine);
       lookup_t *entry = &s->table[q * s->pair_count + p];
-      entry->index = (size_t)(left < 0 ? (int)AURIS_GCC_SIZE + left : left);
+      entry->index =
+          (size_t)(left < 0 ? (int)s->curve_size + left : left);
       entry->fraction = fine - (float)left;
     }
   }
   return s;
 }
 
+auris_srp_t *auris_srp_create(const auris_array_t *array,
+                              unsigned int sample_rate,
+                              const auris_vec3f_t *directions, size_t count) {
+  return auris_srp_create_sized(array, sample_rate, AURIS_ANALYSIS_SIZE,
+                                AURIS_ANALYSIS_HOP, AURIS_GCC_UPSAMPLE,
+                                directions, count);
+}
+
 static float pair_score(const auris_srp_t *s, size_t q, size_t p) {
   const lookup_t entry = s->table[q * s->pair_count + p];
-  const size_t next = (entry.index + 1U) % AURIS_GCC_SIZE;
-  const float a = s->curves[p][entry.index];
-  const float b = s->curves[p][next];
+  const float *curve = &s->curves[p * s->curve_size];
+  const size_t next = (entry.index + 1U) % s->curve_size;
+  const float a = curve[entry.index];
+  const float b = curve[next];
   return a + entry.fraction * (b - a);
 }
 
@@ -206,7 +231,11 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
                                auris_srp_result_t *out) {
   if (s == NULL || fft == NULL || spectrum == NULL || out == NULL ||
       spectrum->sample_rate != s->sample_rate ||
-      spectrum->channels != s->channels) {
+      spectrum->channels != s->channels ||
+      /* The transform and spectrum must match this object's tables. */
+      auris_fft_size(fft) != s->frame_size ||
+      auris_fft_upsample(fft) != s->upsample ||
+      spectrum->size != s->frame_size) {
     return AURIS_ERROR_INVALID_ARGUMENT;
   }
   *out = (auris_srp_result_t){0};
@@ -217,27 +246,41 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
     auris_srp_reset(s);
   }
   bool all_valid = true;
+  float frame_weight = 0.0f;
   for (size_t p = 0U; p < s->pair_count; ++p) {
     bool valid = false;
-    if (auris_gcc_phat_curve(fft, spectrum, s->pairs[p].first,
-                             s->pairs[p].second, s->scratch,
-                             &valid) != AURIS_OK) {
+    float pair_weight = 0.0f;
+    if (auris_gcc_phat_curve_weighted(fft, spectrum, s->pairs[p].first,
+                                      s->pairs[p].second, s->scratch, &valid,
+                                      &pair_weight) != AURIS_OK) {
       auris_srp_reset(s);
       return AURIS_ERROR_INTERNAL;
     }
-    for (size_t n = 0U; n < AURIS_GCC_SIZE; ++n) {
+    frame_weight += pair_weight / (float)s->pair_count;
+    float *curve = &s->curves[p * s->curve_size];
+    for (size_t n = 0U; n < s->curve_size; ++n) {
       if (!s->history_ready || s->smoothing_alpha == 1.0f) {
-        s->curves[p][n] = s->scratch[n];
+        curve[n] = s->scratch[n];
       } else {
-        s->curves[p][n] +=
-            s->smoothing_alpha * (s->scratch[n] - s->curves[p][n]);
+        curve[n] += s->smoothing_alpha * (s->scratch[n] - curve[n]);
       }
     }
     all_valid = all_valid && valid;
   }
+  /* The weight is smoothed exactly like the curves it scales. */
+  if (!s->history_ready || s->smoothing_alpha == 1.0f) {
+    s->weight = frame_weight;
+  } else {
+    s->weight += s->smoothing_alpha * (frame_weight - s->weight);
+  }
   s->history_ready = all_valid;
-  s->next_frame = spectrum->first_frame + (uint64_t)AURIS_ANALYSIS_HOP;
+  s->next_frame = spectrum->first_frame + (uint64_t)s->frame_hop;
   scan(s, out);
+  out->weight = s->weight;
+  out->coherence =
+      s->weight > 1.0e-6f
+          ? fmaxf(0.0f, out->peak * (float)s->frame_size / (2.0f * s->weight))
+          : 0.0f;
   const float best = out->peak;
   float minimum = INFINITY;
   for (size_t q = 0U; q < s->count; ++q) {
@@ -246,11 +289,11 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
   for (size_t p = 0U; p < s->pair_count; ++p) {
     out->contributions[p] = pair_score(s, out->best, p);
     const lookup_t entry = s->table[out->best * s->pair_count + p];
-    const int left = entry.index >= AURIS_GCC_SIZE / 2U
-                         ? (int)entry.index - (int)AURIS_GCC_SIZE
+    const int left = entry.index >= s->curve_size / 2U
+                         ? (int)entry.index - (int)s->curve_size
                          : (int)entry.index;
     out->predicted_lags[p] =
-        ((float)left + entry.fraction) / (float)AURIS_GCC_UPSAMPLE;
+        ((float)left + entry.fraction) / (float)s->upsample;
   }
   /* Compare against the strongest candidate at least 20 degrees away. */
   float rival = -INFINITY;
