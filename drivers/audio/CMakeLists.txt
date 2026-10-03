@@ -5,6 +5,7 @@ add_library(
   STATIC
     src/auris_replay.c
     src/auris_alsa.c
+    src/auris_wav.c
 )
 
 target_include_directories(
