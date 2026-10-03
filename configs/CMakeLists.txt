@@ -2,6 +2,9 @@ add_library(
   auris_config
   STATIC
     src/auris_respeaker_array.c
+    src/auris_cmb_array.c
+    src/auris_array_registry.c
+    src/auris_capture_profiles.c
     src/auris_camera_calibration.c
 )
 
