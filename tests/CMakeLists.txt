@@ -192,3 +192,108 @@ target_compile_definitions(test_controls PRIVATE _POSIX_C_SOURCE=200809L)
 auris_set_warnings(test_controls)
 auris_enable_sanitizers(test_controls)
 add_test(NAME controls COMMAND test_controls)
+
+add_executable(test_cmb_array test_cmb_array.c)
+target_link_libraries(test_cmb_array PRIVATE auris_core auris_config)
+auris_set_warnings(test_cmb_array)
+auris_enable_sanitizers(test_cmb_array)
+add_test(NAME cmb_array COMMAND test_cmb_array)
+
+# Module 17: fails until drivers/adc (auris_adc) exists.
+if(TARGET auris_adc)
+  add_executable(test_cmb_adc test_cmb_adc.c)
+  target_link_libraries(test_cmb_adc PRIVATE auris_adc)
+  target_compile_definitions(test_cmb_adc PRIVATE _POSIX_C_SOURCE=200809L)
+  auris_set_warnings(test_cmb_adc)
+  auris_enable_sanitizers(test_cmb_adc)
+  add_test(NAME cmb_adc COMMAND test_cmb_adc)
+else()
+  add_test(NAME cmb_adc COMMAND ${CMAKE_COMMAND} -E false)
+endif()
+
+# Module 18: capture formats, profiles and the profile-based ALSA driver.
+# Fails until core/src/auris_audio.c and configs/src/auris_capture_profiles.c exist.
+if(EXISTS ${PROJECT_SOURCE_DIR}/core/src/auris_audio.c AND
+   EXISTS ${PROJECT_SOURCE_DIR}/configs/src/auris_capture_profiles.c)
+  add_executable(test_capture_format test_capture_format.c)
+  target_link_libraries(test_capture_format PRIVATE auris_audio auris_config)
+  auris_set_warnings(test_capture_format)
+  auris_enable_sanitizers(test_capture_format)
+  add_test(NAME capture_format COMMAND test_capture_format)
+else()
+  add_test(NAME capture_format COMMAND ${CMAKE_COMMAND} -E false)
+endif()
+
+# Module 19: WAV recording and replay of raw device frames.
+if(EXISTS ${PROJECT_SOURCE_DIR}/drivers/audio/src/auris_wav.c)
+  add_executable(test_wav test_wav.c)
+  target_link_libraries(test_wav PRIVATE auris_audio auris_config)
+  auris_set_warnings(test_wav)
+  auris_enable_sanitizers(test_wav)
+  add_test(NAME wav COMMAND test_wav)
+else()
+  add_test(NAME wav COMMAND ${CMAKE_COMMAND} -E false)
+endif()
+
+# Module 20: analysis frames sized at run time.
+add_executable(test_framing test_framing.c)
+target_link_libraries(test_framing PRIVATE auris_core auris_config)
+auris_set_warnings(test_framing)
+auris_enable_sanitizers(test_framing)
+add_test(NAME framing COMMAND test_framing)
+
+# Module 21: spectrum and GCC-PHAT sized at run time.
+add_executable(test_gcc_runtime test_gcc_runtime.c)
+target_link_libraries(test_gcc_runtime PRIVATE auris_core auris_config)
+auris_set_warnings(test_gcc_runtime)
+auris_enable_sanitizers(test_gcc_runtime)
+add_test(NAME gcc_runtime COMMAND test_gcc_runtime)
+
+# Module 22: SRP-PHAT at run-time frame, hop and refinement.
+add_executable(test_srp_runtime test_srp_runtime.c)
+target_link_libraries(test_srp_runtime PRIVATE auris_core auris_config)
+auris_set_warnings(test_srp_runtime)
+auris_enable_sanitizers(test_srp_runtime)
+add_test(NAME srp_runtime COMMAND test_srp_runtime)
+
+# Module 23: the front-facing heatmap with the CMB.
+add_executable(test_heatmap_cmb test_heatmap_cmb.c)
+target_link_libraries(test_heatmap_cmb PRIVATE auris_core auris_config)
+auris_set_warnings(test_heatmap_cmb)
+auris_enable_sanitizers(test_heatmap_cmb)
+add_test(NAME heatmap_cmb COMMAND test_heatmap_cmb)
+
+# Module 24: the activity gate at run-time sizes and per-profile bands.
+add_executable(test_activity_runtime test_activity_runtime.c)
+target_link_libraries(test_activity_runtime PRIVATE auris_core auris_config)
+auris_set_warnings(test_activity_runtime)
+auris_enable_sanitizers(test_activity_runtime)
+add_test(NAME activity_runtime COMMAND test_activity_runtime)
+
+# Module 25: the imager's audio side on any array.
+add_executable(test_imager_audio test_imager_audio.c)
+target_link_libraries(test_imager_audio PRIVATE auris_imager_audio)
+auris_set_warnings(test_imager_audio)
+auris_enable_sanitizers(test_imager_audio)
+add_test(NAME imager_audio COMMAND test_imager_audio)
+
+# Module 27: SNR-weighted PHAT, the weight-based gate and SRP coherence.
+add_executable(test_weighting test_weighting.c)
+target_link_libraries(test_weighting PRIVATE auris_imager_audio)
+auris_set_warnings(test_weighting)
+auris_enable_sanitizers(test_weighting)
+add_test(NAME weighting COMMAND test_weighting)
+
+# Module 28: the Bayesian direction tracker and the overlay's strength and
+# sub-cell marker.
+add_executable(test_track test_track.c)
+target_link_libraries(test_track PRIVATE auris_core)
+auris_set_warnings(test_track)
+auris_enable_sanitizers(test_track)
+add_test(NAME track COMMAND test_track)
+
+add_executable(test_overlay_draw test_overlay_draw.c)
+target_link_libraries(test_overlay_draw PRIVATE auris_overlay)
+auris_set_warnings(test_overlay_draw)
+auris_enable_sanitizers(test_overlay_draw)
+add_test(NAME overlay_draw COMMAND test_overlay_draw)
