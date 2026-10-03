@@ -120,9 +120,61 @@ int auris_overlay_set_style(auris_overlay_t *s,float cutoff,float opacity) {
   return 0;
 }
 
+/* Canvas position of a grid position between cells: bilinear between the
+   projected cell centres, when all four are in the picture. */
+static bool marker_position(const auris_overlay_t *s, float column, float row,
+                            float *x, float *y) {
+  const auris_overlay_config_t *c = &s->config;
+  size_t col = (size_t)column, r = (size_t)row;
+  if (col >= c->columns - 1U) col = c->columns - 2U;
+  if (r >= c->rows - 1U) r = c->rows - 2U;
+  const float tx = column - (float)col, ty = row - (float)r;
+  const auris_projected_point_t *p00 = &s->points[r * c->columns + col];
+  const auris_projected_point_t *p01 = p00 + 1;
+  const auris_projected_point_t *p10 = p00 + c->columns;
+  const auris_projected_point_t *p11 = p10 + 1;
+  if (!p00->visible || !p01->visible || !p10->visible || !p11->visible) {
+    /* Near the edge of the picture: the nearest cell, if it is visible. */
+    const size_t nearest = (size_t)lroundf(row) * c->columns +
+                           (size_t)lroundf(column);
+    if (!s->points[nearest].visible) return false;
+    *x = s->points[nearest].x;
+    *y = s->points[nearest].y;
+    return true;
+  }
+  const float top = p00->x + tx * (p01->x - p00->x);
+  const float bottom = p10->x + tx * (p11->x - p10->x);
+  const float left = p00->y + tx * (p01->y - p00->y);
+  const float right = p10->y + tx * (p11->y - p10->y);
+  *x = top + ty * (bottom - top);
+  *y = left + ty * (right - left);
+  return true;
+}
+
 int auris_overlay_apply(const auris_overlay_t *s, const float *scores,
                         size_t count, size_t best, bool valid,
                         auris_rgb24_t *frame) {
+  if (s == NULL) return -EINVAL;
+  if (!valid || best >= count) {
+    /* Nothing to draw: still check the canvas, as before. */
+    const int checked = auris_overlay_draw(s, scores, count, 0.0f, 0.0f, 0.0f,
+                                           frame);
+    if (checked < 0 || !valid || s->config.opacity == 0.0f) return checked;
+    return -EINVAL;
+  }
+  const size_t columns = s->config.columns;
+  if (columns == 0U || count != columns * s->config.rows) {
+    const int checked = auris_overlay_draw(s, scores, count, 0.0f, 0.0f, 0.0f,
+                                           frame);
+    return checked < 0 || s->config.opacity == 0.0f ? checked : -EINVAL;
+  }
+  return auris_overlay_draw(s, scores, count, (float)(best % columns),
+                            (float)(best / columns), 1.0f, frame);
+}
+
+int auris_overlay_draw(const auris_overlay_t *s, const float *scores,
+                       size_t count, float mark_column, float mark_row,
+                       float strength, auris_rgb24_t *frame) {
   if (s == NULL || frame == NULL || frame->data == NULL) return -EINVAL;
   const auris_overlay_config_t *c = &s->config;
   const auris_projection_layout_t *l = &c->layout;
@@ -131,9 +183,16 @@ int auris_overlay_apply(const auris_overlay_t *s, const float *scores,
       frame->stride < row_bytes || frame->bytes < row_bytes ||
       (l->canvas_height - 1U) > (frame->bytes - row_bytes) / frame->stride)
     return -EINVAL;
-  if (!valid || c->opacity == 0.0f) return 0;
-  if (scores == NULL || count != c->columns * c->rows || best >= count)
+  if (!isfinite(strength) || strength < 0.0f || strength > 1.0f)
     return -EINVAL;
+  if (strength == 0.0f || c->opacity == 0.0f) return 0;
+  if (scores == NULL || count != c->columns * c->rows ||
+      !isfinite(mark_column) || !isfinite(mark_row) || mark_column < 0.0f ||
+      mark_row < 0.0f || mark_column > (float)(c->columns - 1U) ||
+      mark_row > (float)(c->rows - 1U))
+    return -EINVAL;
+  /* Opacity scale in 1/256 steps; 256 leaves the palette's alpha as it is. */
+  const unsigned int scale = (unsigned int)lroundf(256.0f * strength);
   float low = scores[0], high = scores[0];
   for (size_t q = 0U; q < count; ++q) {
     if (!isfinite(scores[q])) return -EINVAL;
@@ -163,7 +222,7 @@ int auris_overlay_apply(const auris_overlay_t *s, const float *scores,
       const size_t index = (size_t)lroundf(fminf(255.0f,
           fmaxf(0.0f, (value - c->cutoff) * colour_scale)));
       const uint8_t *colour = s->palette[index];
-      const unsigned int alpha = colour[3];
+      const unsigned int alpha = (colour[3] * scale) >> 8;
       for (size_t ch = 0U; ch < 3U; ++ch) {
         const unsigned int mixed = alpha * colour[ch] +
             (255U - alpha) * row[x * 3U + ch];
@@ -171,18 +230,25 @@ int auris_overlay_apply(const auris_overlay_t *s, const float *scores,
       }
     }
   }
-  if (c->mark_peak && s->points[best].visible) {
-    const long cx = lroundf(s->points[best].x);
-    const long cy = lroundf(s->points[best].y);
+  float mx = 0.0f, my = 0.0f;
+  if (c->mark_peak && marker_position(s, mark_column, mark_row, &mx, &my)) {
+    const long cx = lroundf(mx);
+    const long cy = lroundf(my);
+    const unsigned int mark = scale > 255U ? 255U : scale;
     for (long d = -4; d <= 4; ++d) {
       for (size_t axis = 0U; axis < 2U; ++axis) {
+        if (axis == 1U && d == 0) continue; /* blend the centre once */
         const long x = cx + (axis == 0U ? d : 0);
         const long y = cy + (axis == 1U ? d : 0);
         if (x < (long)l->content_x || y < (long)l->content_y ||
             x >= (long)(l->content_x + l->content_width) ||
             y >= (long)(l->content_y + l->content_height)) continue;
         uint8_t *pixel = frame->data + (size_t)y * frame->stride + (size_t)x * 3U;
-        pixel[0] = 0U; pixel[1] = 255U; pixel[2] = 255U;
+        static const unsigned int cyan[3] = {0U, 255U, 255U};
+        for (size_t ch = 0U; ch < 3U; ++ch) {
+          pixel[ch] = (uint8_t)((mark * cyan[ch] + (255U - mark) * pixel[ch] +
+                                 127U) / 255U);
+        }
       }
     }
   }
