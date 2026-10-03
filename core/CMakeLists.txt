@@ -2,6 +2,7 @@ add_library(
   auris_core
   STATIC
     src/auris_array.c
+    src/auris_audio.c
     src/auris_status.c
     src/auris_framer.c
     src/auris_spectrum.c
@@ -12,6 +13,7 @@ add_library(
     src/auris_projection.c
     src/auris_calibration.c
     src/auris_timeline.c
+    src/auris_track.c
 )
 
 find_package(PkgConfig REQUIRED)
