@@ -136,7 +136,7 @@ static int test_preprocessing(void) {
   }
 
   auris_analysis_frame_t frame = {
-      .sample_rate = 16000U, .channels = 2U, .first_frame = 123U};
+      .size = AURIS_ANALYSIS_SIZE, .sample_rate = 16000U, .channels = 2U, .first_frame = 123U};
   for (size_t n = 0U; n < 512U; ++n) {
     frame.samples[0][n] = 0.25f;
     frame.samples[1][n] = -0.5f;
