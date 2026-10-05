@@ -7,15 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define COLUMNS 65U
-#define ROWS 49U
-#define DIRECTIONS (COLUMNS * ROWS)
+#define COLUMNS IMAGER_COLUMNS
+#define ROWS IMAGER_ROWS
+#define DIRECTIONS IMAGER_DIRECTIONS
 #define BLOB_CUTOFF 0.55f /* the overlay's default cutoff */
-
-/* The imager's search view (Module 7). */
-static const auris_view_t view = {
-    .width = 640U, .height = 480U, .fx = 480.0f, .fy = 480.0f, .cx = 319.5f,
-    .cy = 239.5f, .rotation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
 
 static int usage(const char *program) {
   fprintf(stderr,
@@ -23,6 +18,10 @@ static int usage(const char *program) {
           " [--step 1|2|4]\n"
           "          [--no-gate] [--no-smooth] [--weight | --no-weight]\n"
           "          [--diffuse 0..1]   (0: no diffuse-field rejection)\n"
+          "          [--height HZ KEEP SHARE]   (bins below HZ keep KEEP of"
+          " their say on height once\n"
+          "                                      the bins above weigh SHARE of"
+          " them; 0 1 0: off)\n"
           "          [--coherence MIN] [--bias B] [--weight-open BINS]"
           " [--weight-close BINS]\n"
           "          [--no-track] [--kappa K] [--drift CELLS] [--jump RATE]"
@@ -96,6 +95,17 @@ int main(int argc, char **argv) {
       options.diffuse = strtof(argv[++i], &end);
       options.diffuse_given = true;
       if (end == argv[i] || *end != '\0') return usage(argv[0]);
+    } else if (strcmp(argv[i], "--height") == 0 && i + 3 < argc) {
+      char *end3 = NULL;
+      options.height_split_hz = strtof(argv[i + 1], &end);
+      options.height_keep = strtof(argv[i + 2], &end2);
+      options.height_share = strtof(argv[i + 3], &end3);
+      options.height_given = true;
+      if (end == argv[i + 1] || *end != '\0' || end2 == argv[i + 2] ||
+          *end2 != '\0' || end3 == argv[i + 3] || *end3 != '\0') {
+        return usage(argv[0]);
+      }
+      i += 3;
     } else if (strcmp(argv[i], "--no-track") == 0) {
       options.tracking = -1;
     } else if (strcmp(argv[i], "--kappa") == 0 && i + 1 < argc) {
@@ -127,6 +137,7 @@ int main(int argc, char **argv) {
   }
   const auris_array_t *array = plan.config.array;
 
+  const auris_view_t view = imager_search_view();
   static auris_vec3f_t grid[DIRECTIONS];
   static imager_dsp_t dsp;
   static auris_framer_t framer;
