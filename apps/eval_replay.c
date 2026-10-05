@@ -22,6 +22,7 @@ static int usage(const char *program) {
           "usage: %s --file REC.wav [--array NAME] [--band LO HI]"
           " [--step 1|2|4]\n"
           "          [--no-gate] [--no-smooth] [--weight | --no-weight]\n"
+          "          [--diffuse 0..1]   (0: no diffuse-field rejection)\n"
           "          [--coherence MIN] [--bias B] [--weight-open BINS]"
           " [--weight-close BINS]\n"
           "          [--no-track] [--kappa K] [--drift CELLS] [--jump RATE]"
@@ -90,6 +91,10 @@ int main(int argc, char **argv) {
       if (end == argv[i] || *end != '\0') return usage(argv[0]);
     } else if (strcmp(argv[i], "--weight-close") == 0 && i + 1 < argc) {
       options.weight_close = strtof(argv[++i], &end);
+      if (end == argv[i] || *end != '\0') return usage(argv[0]);
+    } else if (strcmp(argv[i], "--diffuse") == 0 && i + 1 < argc) {
+      options.diffuse = strtof(argv[++i], &end);
+      options.diffuse_given = true;
       if (end == argv[i] || *end != '\0') return usage(argv[0]);
     } else if (strcmp(argv[i], "--no-track") == 0) {
       options.tracking = -1;

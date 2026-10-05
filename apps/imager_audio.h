@@ -20,6 +20,8 @@ typedef struct {
   size_t step; /* coarse-to-fine search step: 1 (exhaustive), 2 or 4 */
   /* Tuning overrides; zero keeps the profile's or the gate's default. */
   int weighting;        /* 1 forces SNR weighting on, -1 off */
+  bool diffuse_given;   /* false: the profile's diffuse_rejection */
+  float diffuse;        /* 0 (off) to 1 */
   bool coherence_given; /* false: the profile's coherence_min */
   float coherence_min;
   float noise_bias, weight_open, weight_close;
@@ -37,6 +39,7 @@ typedef struct {
   size_t frame_size, frame_hop, upsample, step, history;
   float band_low_hz, band_high_hz;
   bool weighting;      /* per-bin SNR weights; the gate decides on them */
+  float diffuse;       /* 0..1: pairs discount bins the room dominates */
   float coherence_min; /* maps below this SRP coherence are not shown */
   float noise_bias, weight_open, weight_close; /* 0: the gate's defaults */
   bool tracking;             /* Bayesian tracker instead of curve smoothing */

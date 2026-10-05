@@ -18,10 +18,11 @@ int imager_audio_plan(const imager_audio_options_t *o,
   const bool weighting = o->weighting > 0 ||
                          (o->weighting == 0 && profile->snr_weighting);
   float low = weighting ? profile->weighted_low_hz : profile->band_low_hz;
-  float high = profile->band_high_hz;
+  float high = weighting ? profile->weighted_high_hz : profile->band_high_hz;
   if (o->noise_bias < 0.0f || o->weight_open < 0.0f || o->weight_close < 0.0f ||
       (o->coherence_given &&
        !(o->coherence_min >= 0.0f && o->coherence_min <= 1.0f)) ||
+      (o->diffuse_given && !(o->diffuse >= 0.0f && o->diffuse <= 1.0f)) ||
       o->track_kappa < 0.0f || o->track_drift < 0.0f || o->track_jump < 0.0f ||
       o->track_display < 0.0f || o->hold_s < 0.0f || o->hold_s > 5.0f) {
     return -EINVAL;
@@ -58,6 +59,7 @@ int imager_audio_plan(const imager_audio_options_t *o,
       .band_low_hz = low,
       .band_high_hz = high,
       .weighting = weighting,
+      .diffuse = o->diffuse_given ? o->diffuse : profile->diffuse_rejection,
       .coherence_min = o->coherence_given ? o->coherence_min
                                           : profile->coherence_min,
       .noise_bias = o->noise_bias,
@@ -134,6 +136,7 @@ int imager_dsp_open(imager_dsp_t *dsp, const imager_audio_plan_t *plan,
     return -ENOMEM;
   }
   if (auris_srp_set_grid(dsp->srp, columns, rows, plan->step) != AURIS_OK ||
+      auris_srp_set_diffuse_rejection(dsp->srp, plan->diffuse) != AURIS_OK ||
       imager_dsp_set_smoothing(dsp, smoothing) != AURIS_OK) {
     imager_dsp_close(dsp);
     return -EINVAL;
