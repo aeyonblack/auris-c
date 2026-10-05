@@ -80,5 +80,13 @@ auris_status_t auris_gcc_phat_curve_weighted(auris_fft_t *fft,
                                              const auris_spectrum_t *spectrum,
                                              size_t a, size_t b, float *curve,
                                              bool *valid, float *weight);
+/* As auris_gcc_phat_curve_weighted, with a further gain per bin for this
+   pair: size / 2 + 1 values that multiply the spectrum's weights. NULL
+   gives every bin a gain of one. */
+auris_status_t auris_gcc_phat_curve_gained(auris_fft_t *fft,
+                                           const auris_spectrum_t *spectrum,
+                                           size_t a, size_t b,
+                                           const float *gains, float *curve,
+                                           bool *valid, float *weight);
 
 #endif
