@@ -27,6 +27,15 @@ struct auris_srp {
   float *scratch; /* curve_size floats */
   float speed_of_sound_mps;
   float *gains; /* pair_count rows of frame_size / 2 + 1 bin gains, or NULL */
+  /* Height band: `curves` then holds the bins below split_bin only. */
+  size_t split_bin;   /* 0: off */
+  float height_keep, height_share;
+  float low_weight, high_weight; /* over the last second of frames, in bins */
+  float weight_alpha;
+  float keep_now; /* the low bins' say between rows for this frame */
+  float *curves_high; /* pair_count rows: the bins from split_bin up */
+  float *low, *high;  /* count scores of each part */
+  float *column_best; /* columns values: each column's best low score */
   float smoothing_alpha;
   float weight; /* smoothed mean pair weight, in bins */
   uint64_t next_frame;
@@ -91,6 +100,10 @@ void auris_srp_destroy(auris_srp_t *state) {
     free(state->curves);
     free(state->scratch);
     free(state->gains);
+    free(state->curves_high);
+    free(state->low);
+    free(state->high);
+    free(state->column_best);
     free(state);
   }
 }
@@ -173,9 +186,10 @@ auris_srp_t *auris_srp_create(const auris_array_t *array,
                                 directions, count);
 }
 
-static float pair_score(const auris_srp_t *s, size_t q, size_t p) {
+static float pair_score(const auris_srp_t *s, const float *curves, size_t q,
+                        size_t p) {
   const lookup_t entry = s->table[q * s->pair_count + p];
-  const float *curve = &s->curves[p * s->curve_size];
+  const float *curve = &curves[p * s->curve_size];
   const size_t next = (entry.index + 1U) % s->curve_size;
   const float a = curve[entry.index];
   const float b = curve[next];
@@ -187,7 +201,10 @@ auris_status_t auris_srp_set_grid(auris_srp_t *s,
   if (s == NULL || columns < 2U || rows < 2U || step == 0U ||
       columns > AURIS_SRP_MAX_DIRECTIONS / rows ||
       columns * rows != s->count ||
-      (columns - 1U) % step != 0U || (rows - 1U) % step != 0U) {
+      (columns - 1U) % step != 0U || (rows - 1U) % step != 0U ||
+      /* The height band scores every cell. */
+      (s->split_bin != 0U &&
+       (step != 1U || columns != s->columns || rows != s->rows))) {
     return AURIS_ERROR_INVALID_ARGUMENT;
   }
   s->columns = columns;
@@ -196,11 +213,59 @@ auris_status_t auris_srp_set_grid(auris_srp_t *s,
   return AURIS_OK;
 }
 
+auris_status_t auris_srp_set_height_band(auris_srp_t *s, float split_hz,
+                                         float keep, float share) {
+  if (s == NULL || !isfinite(split_hz) || !isfinite(keep) ||
+      !isfinite(share) || split_hz < 0.0f || keep <= 0.0f || keep > 1.0f ||
+      share < 0.0f || share > 100.0f) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  const size_t bins = s->frame_size / 2U + 1U;
+  const double bin_hz = (double)s->sample_rate / (double)s->frame_size;
+  const double first = ceil((double)split_hz / bin_hz - 1.0e-6);
+  if (split_hz == 0.0f || keep == 1.0f) {
+    auris_srp_reset(s);
+    s->split_bin = 0U;
+    return AURIS_OK;
+  }
+  /* Both parts need at least one interior bin. */
+  if (first < 2.0 || first > (double)(bins - 2U) || s->step != 1U ||
+      s->columns < 2U || s->columns * s->rows != s->count) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  if (s->curves_high == NULL) {
+    s->curves_high = calloc(s->pair_count * s->curve_size, sizeof(float));
+    s->low = calloc(s->count, sizeof(float));
+    s->high = calloc(s->count, sizeof(float));
+    s->column_best = calloc(s->columns, sizeof(float));
+    if (s->curves_high == NULL || s->low == NULL || s->high == NULL ||
+        s->column_best == NULL) {
+      free(s->curves_high);
+      free(s->low);
+      free(s->high);
+      free(s->column_best);
+      s->curves_high = s->low = s->high = s->column_best = NULL;
+      s->split_bin = 0U;
+      return AURIS_ERROR_INTERNAL;
+    }
+  }
+  auris_srp_reset(s);
+  s->split_bin = (size_t)first;
+  s->height_keep = keep;
+  s->height_share = share;
+  s->low_weight = 0.0f;
+  s->high_weight = 0.0f;
+  s->weight_alpha =
+      -expm1f(-(float)s->frame_hop / (float)s->sample_rate / 1.0f);
+  s->keep_now = share == 0.0f ? keep : 1.0f;
+  return AURIS_OK;
+}
+
 static void evaluate(const auris_srp_t *s, size_t q,
                      auris_srp_result_t *out) {
   float sum = 0.0f;
   for (size_t p = 0U; p < s->pair_count; ++p) {
-    sum += pair_score(s, q, p);
+    sum += pair_score(s, s->curves, q, p);
   }
   const float score = sum / (float)s->pair_count;
   out->scores[q] = score;
@@ -211,7 +276,43 @@ static void evaluate(const auris_srp_t *s, size_t q,
   }
 }
 
+/* Every cell, with the low and high bins scored apart. A cell's low score
+   counts as its column's best, less `keep_now` of its shortfall. */
+static void scan_height(const auris_srp_t *s, auris_srp_result_t *out) {
+  const size_t columns = s->columns;
+  const float keep = s->keep_now;
+  for (size_t x = 0U; x < columns; ++x) {
+    s->column_best[x] = -INFINITY;
+  }
+  for (size_t q = 0U; q < s->count; ++q) {
+    float low = 0.0f, high = 0.0f;
+    for (size_t p = 0U; p < s->pair_count; ++p) {
+      low += pair_score(s, s->curves, q, p);
+      high += pair_score(s, s->curves_high, q, p);
+    }
+    s->low[q] = low / (float)s->pair_count;
+    s->high[q] = high / (float)s->pair_count;
+    s->column_best[q % columns] =
+        fmaxf(s->column_best[q % columns], s->low[q]);
+  }
+  out->peak = -INFINITY;
+  for (size_t q = 0U; q < s->count; ++q) {
+    const float best = s->column_best[q % columns];
+    const float score = s->high[q] + best - keep * (best - s->low[q]);
+    out->scores[q] = score;
+    ++out->evaluated;
+    if (score > out->peak) {
+      out->peak = score;
+      out->best = q;
+    }
+  }
+}
+
 static void scan(const auris_srp_t *s, auris_srp_result_t *out) {
+  if (s->split_bin != 0U) {
+    scan_height(s, out);
+    return;
+  }
   out->peak = -INFINITY;
   if (s->step <= 1U) {
     for (size_t q = 0U; q < s->count; ++q) {
@@ -282,28 +383,43 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
     auris_srp_reset(s);
   }
   bool all_valid = true;
-  float frame_weight = 0.0f;
+  float frame_weight = 0.0f, frame_high = 0.0f;
+  const size_t last_bin = s->frame_size / 2U;
   for (size_t p = 0U; p < s->pair_count; ++p) {
-    bool valid = false;
-    float pair_weight = 0.0f;
     const float *gains =
         s->gains == NULL ? NULL : &s->gains[p * (s->frame_size / 2U + 1U)];
-    if (auris_gcc_phat_curve_gained(fft, spectrum, s->pairs[p].first,
-                                    s->pairs[p].second, gains, s->scratch,
-                                    &valid, &pair_weight) != AURIS_OK) {
-      auris_srp_reset(s);
-      return AURIS_ERROR_INTERNAL;
-    }
-    frame_weight += pair_weight / (float)s->pair_count;
-    float *curve = &s->curves[p * s->curve_size];
-    for (size_t n = 0U; n < s->curve_size; ++n) {
-      if (!s->history_ready || s->smoothing_alpha == 1.0f) {
-        curve[n] = s->scratch[n];
-      } else {
-        curve[n] += s->smoothing_alpha * (s->scratch[n] - curve[n]);
+    const size_t a = s->pairs[p].first, b = s->pairs[p].second;
+    /* One curve of every bin, or one of the bins below split_bin and one
+       of the rest. */
+    const size_t parts = s->split_bin == 0U ? 1U : 2U;
+    bool pair_valid = false;
+    for (size_t part = 0U; part < parts; ++part) {
+      bool valid = false;
+      float weight = 0.0f;
+      const size_t first = part == 0U ? 1U : s->split_bin;
+      const size_t last = parts == 2U && part == 0U ? s->split_bin - 1U
+                                                    : last_bin;
+      if (auris_gcc_phat_curve_band(fft, spectrum, a, b, gains, first, last,
+                                    s->scratch, &valid, &weight) != AURIS_OK) {
+        auris_srp_reset(s);
+        return AURIS_ERROR_INTERNAL;
+      }
+      frame_weight += weight / (float)s->pair_count;
+      if (part == 1U) {
+        frame_high += weight / (float)s->pair_count;
+      }
+      pair_valid = pair_valid || valid;
+      float *curve = part == 0U ? &s->curves[p * s->curve_size]
+                                : &s->curves_high[p * s->curve_size];
+      for (size_t n = 0U; n < s->curve_size; ++n) {
+        if (!s->history_ready || s->smoothing_alpha == 1.0f) {
+          curve[n] = s->scratch[n];
+        } else {
+          curve[n] += s->smoothing_alpha * (s->scratch[n] - curve[n]);
+        }
       }
     }
-    all_valid = all_valid && valid;
+    all_valid = all_valid && pair_valid;
   }
   /* The weight is smoothed exactly like the curves it scales. */
   if (!s->history_ready || s->smoothing_alpha == 1.0f) {
@@ -313,6 +429,17 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
   }
   s->history_ready = all_valid;
   s->next_frame = spectrum->first_frame + (uint64_t)s->frame_hop;
+  if (s->split_bin != 0U && s->height_share > 0.0f) {
+    /* Both averages start from nothing, so the first frame's own ratio
+       counts at once. They are kept through pauses. */
+    s->low_weight += s->weight_alpha * (frame_weight - frame_high - s->low_weight);
+    s->high_weight += s->weight_alpha * (frame_high - s->high_weight);
+    const float reached =
+        s->high_weight >= s->height_share * s->low_weight
+            ? 1.0f
+            : s->high_weight / (s->height_share * s->low_weight);
+    s->keep_now = 1.0f - (1.0f - s->height_keep) * reached;
+  }
   scan(s, out);
   out->weight = s->weight;
   out->coherence =
@@ -325,7 +452,10 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
     minimum = fminf(minimum, out->scores[q]);
   }
   for (size_t p = 0U; p < s->pair_count; ++p) {
-    out->contributions[p] = pair_score(s, out->best, p);
+    out->contributions[p] =
+        pair_score(s, s->curves, out->best, p) +
+        (s->split_bin == 0U ? 0.0f
+                            : pair_score(s, s->curves_high, out->best, p));
     const lookup_t entry = s->table[out->best * s->pair_count + p];
     const int left = entry.index >= s->curve_size / 2U
                          ? (int)entry.index - (int)s->curve_size

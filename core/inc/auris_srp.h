@@ -60,6 +60,20 @@ auris_status_t auris_srp_set_smoothing(auris_srp_t *s, float seconds);
    `strength` is 0 (off) to 1. result.weight counts the bins kept, so
    coherence keeps its meaning. */
 auris_status_t auris_srp_set_diffuse_rejection(auris_srp_t *s, float strength);
+/* Height from the high bins, off by default. A small array cannot tell a
+   source from its reflection off the floor or ceiling until the wavelength
+   is short: the two lie in the same column of the view and merge, so the
+   low bins put the height a few degrees out. When on, the bins below
+   split_hz are scored separately. They always place the column in full:
+   each cell gets its column's best low-bin score. Of how far a cell's own
+   low-bin score falls short of that, only a part counts. That part is 1
+   while the sound has nothing above split_hz, so the low bins then choose
+   the height as before; it falls to `keep` (0..1] as the weight of the
+   high bins, averaged over the last second of frames, reaches `share` of
+   the low bins' weight. share 0: the part is always `keep`.
+   Needs auris_srp_set_grid first, with step 1. split_hz 0 or keep 1: off. */
+auris_status_t auris_srp_set_height_band(auris_srp_t *state, float split_hz,
+                                         float keep, float share);
 void auris_srp_reset(auris_srp_t *state);
 auris_status_t auris_srp_set_grid(auris_srp_t *state,
     size_t columns, size_t rows, size_t step);
