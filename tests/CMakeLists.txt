@@ -325,3 +325,17 @@ target_link_libraries(test_search_view PRIVATE auris_imager_audio)
 auris_set_warnings(test_search_view)
 auris_enable_sanitizers(test_search_view)
 add_test(NAME search_view COMMAND test_search_view)
+
+# Module 29: sensor exposure control.
+add_executable(test_exposure test_exposure.c)
+target_link_libraries(test_exposure PRIVATE auris_image)
+auris_set_warnings(test_exposure)
+auris_enable_sanitizers(test_exposure)
+add_test(NAME exposure COMMAND test_exposure)
+
+add_executable(test_camera_chain test_camera_chain.c)
+target_link_libraries(test_camera_chain PRIVATE auris_camera_chain)
+target_compile_definitions(test_camera_chain PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(test_camera_chain)
+auris_enable_sanitizers(test_camera_chain)
+add_test(NAME camera_chain COMMAND test_camera_chain)
