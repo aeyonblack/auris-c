@@ -89,6 +89,38 @@ auris_status_t auris_view_grid(const auris_view_t *view, size_t columns,
   return AURIS_OK;
 }
 
+auris_status_t auris_view_nudge(auris_view_t *view, float pan_deg,
+                                float tilt_deg) {
+  if (!view_valid(view) || !isfinite(pan_deg) || !isfinite(tilt_deg) ||
+      fabsf(pan_deg) > 30.0f || fabsf(tilt_deg) > 30.0f) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  const float degree = 0.017453292519943295f;
+  const float cp = cosf(pan_deg * degree), sp = sinf(pan_deg * degree);
+  const float ct = cosf(tilt_deg * degree), st = sinf(tilt_deg * degree);
+  /* In camera axes (x right, y up, z forward) the picture moves by
+     tilt * pan. The view stores camera -> array, so the transpose of that
+     product goes on the right. */
+  const float turn[3][3] = {{cp, -sp * st, -sp * ct},
+                            {0.0f, ct, -st},
+                            {sp, cp * st, cp * ct}};
+  float next[3][3];
+  for (size_t row = 0U; row < 3U; ++row) {
+    for (size_t col = 0U; col < 3U; ++col) {
+      next[row][col] = 0.0f;
+      for (size_t k = 0U; k < 3U; ++k) {
+        next[row][col] += view->rotation[row][k] * turn[k][col];
+      }
+    }
+  }
+  for (size_t row = 0U; row < 3U; ++row) {
+    for (size_t col = 0U; col < 3U; ++col) {
+      view->rotation[row][col] = next[row][col];
+    }
+  }
+  return AURIS_OK;
+}
+
 auris_status_t auris_view_project(const auris_view_t *view,
                                   auris_vec3f_t direction, float *u, float *v,
                                   bool *visible) {
