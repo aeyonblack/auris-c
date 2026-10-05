@@ -1,5 +1,4 @@
-#include "auris_camera.h"
-#include "auris_image.h"
+#include "camera_chain.h"
 #include "auris_outputs.h"
 #include <errno.h>
 #include <linux/videodev2.h>
@@ -56,63 +55,36 @@ int main(int argc, char **argv) {
   action.sa_handler = SIG_IGN;
   if (sigaction(SIGPIPE, &action, NULL))
     return EXIT_FAILURE;
-  const auris_camera_config_t config = {
-      .sensor = "/dev/v4l-subdev2",
-      .bridge = "/dev/v4l-subdev1",
-      .device = "/dev/v4l/by-path/platform-4510000.ticsi2rx-video-index0",
-      .width = 1640U,
-      .height = 1232U,
-      .ti_5_10_packed = true};
-  auris_camera_t *camera = NULL;
-  auris_image_t *image = NULL;
+  camera_chain_t *chain = NULL;
   auris_outputs_t *output_stream = NULL;
   uint8_t *rgb = NULL;
   int result = EXIT_FAILURE;
-  int err = auris_camera_open(&camera, &config);
+  int err = camera_chain_open(&chain, 640U, 360U, "configs/lens_shading.txt");
   if (err < 0) {
     fprintf(stderr, "camera open: %s\n", strerror(-err));
     goto done;
   }
-  const auris_camera_format_t *f = auris_camera_format(camera);
-  const auris_image_config_t processing = {
-      .source_width = f->width,
-      .source_height = f->height,
-      .width = 640U,
-      .height = 360U,
-      .black = 16.0f,
-      .gain = {1.0f, 1.0f, 1.0f},
-      .exposure_ev = 0.0f,
-      .gamma = 2.2f,
-      .colour_matrix = {{2.18174f, -0.70887f, -0.47287f},
-                        {-0.70196f, 2.76426f, -1.06231f},
-                        {-0.25157f, -0.71978f, 1.97135f}},
-      .auto_white_balance = true,
-      .auto_exposure = true};
-  err = auris_image_open(&image, &processing);
-  if (err < 0) {
-    fprintf(stderr, "image open: %s\n", strerror(-err));
-    goto done;
-  }
-  const size_t bytes =
-      (size_t)processing.width * processing.height * 3U;
+  const auris_camera_format_t *f = camera_chain_format(chain);
+  const size_t bytes = 640U * 360U * 3U;
   rgb = malloc(bytes);
   if (rgb == NULL)
     goto done;
-  auris_rgb24_t output = {rgb, processing.width, processing.height,
-                          (size_t)processing.width * 3U, bytes};
-  const auris_image_rect_t *rect = auris_image_content(image);
+  auris_rgb24_t output = {rgb, 640U, 360U, 640U * 3U, bytes};
+  const auris_image_rect_t *rect = camera_chain_content(chain);
   fprintf(stderr, "RGB %ux%u, content %ux%u at (%u,%u)\n", output.width,
           output.height, rect->width, rect->height, rect->x, rect->y);
   fprintf(stderr,
-          "RGGB %ux%u: reported stride %u, used stride %u, image %u bytes\n",
-          f->width, f->height, f->reported_stride, f->stride, f->sizeimage);
+          "RGGB %ux%u, %u bits: reported stride %u, used stride %u, image %u "
+          "bytes\n",
+          f->width, f->height, f->bits, f->reported_stride, f->stride,
+          f->sizeimage);
   err = auris_outputs_open(&output_stream, &outputs, STDOUT_FILENO,
                             output.width, output.height);
   if (err < 0) {
     fprintf(stderr, "output open: %s\n", strerror(-err));
     goto done;
   }
-  err = auris_camera_start(camera);
+  err = camera_chain_start(chain);
   if (err < 0) {
     fprintf(stderr, "camera start: %s\n", strerror(-err));
     goto done;
@@ -128,7 +100,7 @@ int main(int argc, char **argv) {
       goto done;
     }
     auris_camera_frame_t frame;
-    err = auris_camera_acquire(camera, &frame, 1000);
+    err = camera_chain_acquire(chain, &frame, 1000);
     if (err == -EINTR || err == -EAGAIN)
       continue;
     if (err == -EBADMSG) {
@@ -149,9 +121,7 @@ int main(int argc, char **argv) {
     previous = frame.sequence;
     const bool send = next_output == 0U || frame.timestamp_us >= next_output;
     if (send) {
-      const auris_bayer8_t input = {frame.data, f->width, f->height,
-                                    f->stride, frame.bytes};
-      err = auris_image_render(image, &input, &output);
+      err = camera_chain_render(chain, &frame, &output);
       if (err < 0) {
         fprintf(stderr, "image render: %s\n", strerror(-err));
         goto done;
@@ -162,7 +132,7 @@ int main(int argc, char **argv) {
         next_output += output_period_us;
       } while (next_output <= frame.timestamp_us);
     }
-    err = auris_camera_release(camera);
+    err = camera_chain_release(chain);
     if (err < 0) {
       fprintf(stderr, "camera release: %s\n", strerror(-err));
       goto done;
@@ -189,6 +159,17 @@ int main(int argc, char **argv) {
               (double)(frames - 1U) * 1000000.0 /
                   (double)(frame.timestamp_us - first_us),
               frame.flags);
+      camera_chain_status_t now;
+      camera_chain_status(chain, &now);
+      fprintf(stderr,
+              "EXPOSURE %.1f ms, analogue x%.2f, digital x%.2f, software "
+              "x%.2f | balance R %.2f B %.2f | level %.3f, %.1f %% at the "
+              "limit%s\n",
+              (double)now.exposure_ms, (double)now.analogue,
+              (double)now.digital, (double)now.software,
+              (double)now.balance_red, (double)now.balance_blue,
+              (double)now.mean, 100.0 * (double)now.clipped,
+              now.shading ? " | lens shading corrected" : "");
     }
   }
   if (limit != 0U) {
@@ -211,8 +192,7 @@ done:
             (unsigned long long)stats.dropped, stats.encoded_bytes);
   }
   auris_outputs_close(output_stream);
-  auris_camera_close(camera);
-  auris_image_close(image);
+  camera_chain_close(chain);
   free(rgb);
   return running ? result : EXIT_SUCCESS;
 }
