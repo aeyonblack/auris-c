@@ -297,3 +297,16 @@ target_link_libraries(test_overlay_draw PRIVATE auris_overlay)
 auris_set_warnings(test_overlay_draw)
 auris_enable_sanitizers(test_overlay_draw)
 add_test(NAME overlay_draw COMMAND test_overlay_draw)
+
+add_executable(test_view_nudge test_view_nudge.c)
+target_link_libraries(test_view_nudge PRIVATE auris_core)
+auris_set_warnings(test_view_nudge)
+auris_enable_sanitizers(test_view_nudge)
+add_test(NAME view_nudge COMMAND test_view_nudge)
+
+# Rejecting the reverberant (diffuse) field: per-pair bin gains.
+add_executable(test_diffuse test_diffuse.c)
+target_link_libraries(test_diffuse PRIVATE auris_imager_audio)
+auris_set_warnings(test_diffuse)
+auris_enable_sanitizers(test_diffuse)
+add_test(NAME diffuse COMMAND test_diffuse)
