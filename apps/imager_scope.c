@@ -6,6 +6,7 @@
 #include "auris_overlay.h"
 #include "auris_srp.h"
 #include "auris_timeline.h"
+#include "camera_chain.h"
 #include "imager_audio.h"
 #include "imager_calibration.h"
 #include <errno.h>
@@ -423,18 +424,7 @@ int main(int argc, char **argv) {
       .width = 1640U, .height = 1232U, .fx = 1358.5007f, .fy = 1356.8622f,
       .cx = 819.5f, .cy = 615.5f,
       .rotation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
-  const auris_camera_config_t capture = {
-      .sensor = "/dev/v4l-subdev2", .bridge = "/dev/v4l-subdev1",
-      .device = "/dev/v4l/by-path/platform-4510000.ticsi2rx-video-index0",
-      .width = 1640U, .height = 1232U, .ti_5_10_packed = true};
-  const auris_image_config_t processing = {
-      .source_width = 1640U, .source_height = 1232U,
-      .width = 640U, .height = 360U, .black = 16.0f,
-      .gain = {1.0f, 1.0f, 1.0f}, .exposure_ev = 0.0f, .gamma = 2.2f,
-      .colour_matrix = {{2.18174f, -0.70887f, -0.47287f},
-                        {-0.70196f, 2.76426f, -1.06231f},
-                        {-0.25157f, -0.71978f, 1.97135f}},
-      .auto_white_balance = true, .auto_exposure = true};
+  const uint32_t canvas_width = 640U, canvas_height = 360U;
   /* Static: the map history alone is about 0.8 MB. */
   static audio_t audio = {.mutex = PTHREAD_MUTEX_INITIALIZER};
   audio.settings = settings;
@@ -444,8 +434,7 @@ int main(int argc, char **argv) {
   audio.audio_file = audio_file;
   atomic_init(&audio.stop, false);
   atomic_init(&audio.failed, false);
-  auris_camera_t *camera = NULL;
-  auris_image_t *image = NULL;
+  camera_chain_t *camera = NULL;
   auris_outputs_t *output_stream = NULL;
   auris_touch_t *touch=NULL;
   auris_settings_writer_t *writer=NULL;
@@ -499,26 +488,24 @@ int main(int argc, char **argv) {
             "weigh %.2f of the rest; lower bins then keep %.2f of their say "
             "on it\n", (double)plan.height_split_hz,
             (double)plan.height_share, (double)plan.height_keep);
-  err = auris_camera_open(&camera, &capture);
+  err = camera_chain_open(&camera, canvas_width, canvas_height,
+                          "configs/lens_shading.txt");
   if (err < 0) goto done;
-  const auris_camera_format_t *format = auris_camera_format(camera);
-  err = auris_image_open(&image, &processing);
-  if (err < 0) goto done;
-  const auris_image_rect_t *rect = auris_image_content(image);
+  const auris_image_rect_t *rect = camera_chain_content(camera);
   const auris_overlay_config_t drawing = {
       .camera = camera_view, .search = search,
-      .layout = {processing.width, processing.height, rect->x, rect->y,
+      .layout = {canvas_width, canvas_height, rect->x, rect->y,
                   rect->width, rect->height},
       .columns = COLUMNS, .rows = ROWS,
       .cutoff = settings.cutoff, .opacity = settings.opacity, .mark_peak = true};
   session.drawing = drawing;
   err = auris_overlay_open(&session.overlay, &drawing);
   if (err < 0) goto done;
-  const size_t bytes = (size_t)processing.width * processing.height * 3U;
+  const size_t bytes = (size_t)canvas_width * canvas_height * 3U;
   rgb = malloc(bytes);
   if (rgb == NULL) { err = -ENOMEM; goto done; }
-  auris_rgb24_t canvas = {rgb, processing.width, processing.height,
-                          (size_t)processing.width * 3U, bytes};
+  auris_rgb24_t canvas = {rgb, canvas_width, canvas_height,
+                          (size_t)canvas_width * 3U, bytes};
   err = auris_outputs_open(&output_stream, &outputs, STDOUT_FILENO,
                             canvas.width, canvas.height);
   if (err < 0) goto done;
@@ -531,7 +518,7 @@ int main(int argc, char **argv) {
       if (opened<0) fprintf(stderr,"settings writer unavailable: %s\n",strerror(-opened));
     }
   }
-  err = auris_camera_start(camera);
+  err = camera_chain_start(camera);
   if (err < 0) goto done;
   /* Worker inherits blocked termination signals. Main owns the signal flag. */
   sigset_t blocked, previous;
@@ -606,7 +593,7 @@ int main(int argc, char **argv) {
       }
     }
     auris_camera_frame_t frame;
-    err = auris_camera_acquire(camera, &frame, 100);
+    err = camera_chain_acquire(camera, &frame, 100);
     if (err == -EINTR || err == -EAGAIN || err == -ETIMEDOUT || err == -EBADMSG) {
       if (now_us() - last_camera > 2000000U) { err = -ETIMEDOUT; goto done; }
       continue;
@@ -619,12 +606,8 @@ int main(int argc, char **argv) {
     const bool stale = monotonic && (frame.timestamp_us > received ||
                                     received - frame.timestamp_us > MAX_AGE_US);
     const bool present = !stale && received >= next_output;
-    if (present) {
-      const auris_bayer8_t raw = {frame.data, format->width, format->height,
-                                  format->stride, frame.bytes};
-      err = auris_image_render(image, &raw, &canvas);
-    }
-    const int released = auris_camera_release(camera);
+    if (present) err = camera_chain_render(camera, &frame, &canvas);
+    const int released = camera_chain_release(camera);
     if (err < 0) goto done;
     if (released < 0) { err = released; goto done; }
     if (!present) continue;
@@ -692,6 +675,12 @@ int main(int argc, char **argv) {
           stats.encoded_bytes, (double)stats.write_us/1000.0,
           (unsigned long long)stats.dropped,
           visible ? "visible":"hidden");
+      camera_chain_status_t seen;
+      camera_chain_status(camera, &seen);
+      fprintf(stderr, "EXPOSURE %.1f ms, analogue x%.2f, digital x%.2f, software x%.2f | balance R %.2f B %.2f | level %.3f, %.1f %% at the limit\n",
+          (double)seen.exposure_ms, (double)seen.analogue, (double)seen.digital,
+          (double)seen.software, (double)seen.balance_red, (double)seen.balance_blue,
+          (double)seen.mean, 100.0 * (double)seen.clipped);
       next_timing = composed + 1000000U;
     }
   }
@@ -715,9 +704,8 @@ done:
   auris_outputs_close(output_stream);
   auris_touch_close(touch);
   auris_settings_writer_close(writer);
-  auris_camera_close(camera);
+  camera_chain_close(camera);
   auris_overlay_close(session.overlay);
-  auris_image_close(image);
   free(rgb);
   imager_dsp_close(&audio.dsp);
   (void)pthread_mutex_destroy(&audio.mutex);
