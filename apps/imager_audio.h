@@ -5,7 +5,18 @@
 #include "auris_array_configs.h"
 #include "auris_srp.h"
 #include "auris_track.h"
+#include "auris_view.h"
 #include <errno.h>
+
+/* The imager's search grid, row-major from the top left. Sideways it spans
+   the camera picture plus 2.6 degrees each side. Above and below it reaches
+   about 6 degrees past the picture: a sound or an echo just outside the
+   picture is then placed outside it and not drawn, where a grid that ended
+   at the picture would pin it to the edge. Reaching further was tried and
+   made voices drop out: their low bins place height too loosely. */
+#define IMAGER_COLUMNS 65U
+#define IMAGER_ROWS 57U
+#define IMAGER_DIRECTIONS (IMAGER_COLUMNS * IMAGER_ROWS)
 
 /* Acoustic maps the imager keeps for matching against camera frames: the
    last 512 ms (32 maps at the ReSpeaker's 16 ms hops, 48 at the CMB's). */
@@ -25,6 +36,8 @@ typedef struct {
   bool coherence_given; /* false: the profile's coherence_min */
   float coherence_min;
   float noise_bias, weight_open, weight_close;
+  bool height_given; /* false: the profile's height band; 0 Hz: off */
+  float height_split_hz, height_keep, height_share;
   /* Tracking (Module 28). -1 turns the tracker off and goes back to the
      0.1 s smoothing of the SRP curves. Zero keeps a value's default. */
   int tracking;
@@ -40,6 +53,10 @@ typedef struct {
   float band_low_hz, band_high_hz;
   bool weighting;      /* per-bin SNR weights; the gate decides on them */
   float diffuse;       /* 0..1: pairs discount bins the room dominates */
+  /* Bins below height_split_hz place the column; their say between rows
+     falls to height_keep as the bins above reach height_share of their
+     weight. 0 Hz: off. Always off for a coarse search. */
+  float height_split_hz, height_keep, height_share;
   float coherence_min; /* maps below this SRP coherence are not shown */
   float noise_bias, weight_open, weight_close; /* 0: the gate's defaults */
   bool tracking;             /* Bayesian tracker instead of curve smoothing */
@@ -78,6 +95,9 @@ typedef struct {
   float display[AURIS_TRACK_MAX_CELLS]; /* the tracker's map to draw */
 } imager_dsp_t;
 
+/* The view whose IMAGER_COLUMNS x IMAGER_ROWS grid (auris_view_grid) the
+   imager searches: cells 1.19 degrees apart at the centre, array axes. */
+auris_view_t imager_search_view(void);
 /* Returns 0, or -EINVAL for an unknown array, bad band or bad step. */
 int imager_audio_plan(const imager_audio_options_t *options,
                       imager_audio_plan_t *plan);

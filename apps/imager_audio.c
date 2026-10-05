@@ -3,6 +3,15 @@
 #include <math.h>
 #include <stdint.h>
 
+auris_view_t imager_search_view(void) {
+  /* 9.98 pixels a cell at a focal length of 480: 65 columns span 640
+     pixels, 57 rows span 560. */
+  return (auris_view_t){.width = 640U, .height = 560U,
+                        .fx = 480.0f, .fy = 480.0f,
+                        .cx = 319.5f, .cy = 279.5f,
+                        .rotation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+}
+
 int imager_audio_plan(const imager_audio_options_t *o,
                       imager_audio_plan_t *plan) {
   if (o == NULL || plan == NULL ||
@@ -23,9 +32,22 @@ int imager_audio_plan(const imager_audio_options_t *o,
       (o->coherence_given &&
        !(o->coherence_min >= 0.0f && o->coherence_min <= 1.0f)) ||
       (o->diffuse_given && !(o->diffuse >= 0.0f && o->diffuse <= 1.0f)) ||
+      (o->height_given &&
+       !(o->height_split_hz >= 0.0f && o->height_split_hz < nyquist &&
+         o->height_keep > 0.0f && o->height_keep <= 1.0f &&
+         o->height_share >= 0.0f && o->height_share <= 100.0f)) ||
       o->track_kappa < 0.0f || o->track_drift < 0.0f || o->track_jump < 0.0f ||
       o->track_display < 0.0f || o->hold_s < 0.0f || o->hold_s > 5.0f) {
     return -EINVAL;
+  }
+  float split = o->height_given ? o->height_split_hz
+                                : profile->height_split_hz;
+  float keep = o->height_given ? o->height_keep : profile->height_keep;
+  float share = o->height_given ? o->height_share : profile->height_share;
+  if (o->step != 1U || split == 0.0f || keep == 1.0f) {
+    split = 0.0f;
+    keep = 1.0f;
+    share = 0.0f;
   }
   auris_track_config_t track = auris_track_defaults();
   if (o->track_kappa > 0.0f) track.kappa = o->track_kappa;
@@ -60,6 +82,9 @@ int imager_audio_plan(const imager_audio_options_t *o,
       .band_high_hz = high,
       .weighting = weighting,
       .diffuse = o->diffuse_given ? o->diffuse : profile->diffuse_rejection,
+      .height_split_hz = split,
+      .height_keep = keep,
+      .height_share = share,
       .coherence_min = o->coherence_given ? o->coherence_min
                                           : profile->coherence_min,
       .noise_bias = o->noise_bias,
@@ -137,6 +162,9 @@ int imager_dsp_open(imager_dsp_t *dsp, const imager_audio_plan_t *plan,
   }
   if (auris_srp_set_grid(dsp->srp, columns, rows, plan->step) != AURIS_OK ||
       auris_srp_set_diffuse_rejection(dsp->srp, plan->diffuse) != AURIS_OK ||
+      auris_srp_set_height_band(dsp->srp, plan->height_split_hz,
+                                plan->height_keep, plan->height_share) !=
+          AURIS_OK ||
       imager_dsp_set_smoothing(dsp, smoothing) != AURIS_OK) {
     imager_dsp_close(dsp);
     return -EINVAL;
