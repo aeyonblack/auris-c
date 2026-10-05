@@ -223,7 +223,8 @@ int main(int argc, char **argv) {
   if (!band_given) {
     band[0] = (double)(profile->snr_weighting ? profile->weighted_low_hz
                                               : profile->band_low_hz);
-    band[1] = (double)profile->band_high_hz;
+    band[1] = (double)(profile->snr_weighting ? profile->weighted_high_hz
+                                              : profile->band_high_hz);
   }
   const bool full_band = band[0] == 0.0 && band[1] == 0.0;
   if (full_band) {

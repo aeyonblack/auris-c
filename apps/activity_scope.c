@@ -148,7 +148,8 @@ int main(int argc, char **argv) {
   } else {
     gate_config.low_hz = profile->snr_weighting ? profile->weighted_low_hz
                                                 : profile->band_low_hz;
-    gate_config.high_hz = profile->band_high_hz;
+    gate_config.high_hz = profile->snr_weighting ? profile->weighted_high_hz
+                                                 : profile->band_high_hz;
   }
   if (!minimum_given) {
     gate_config.minimum_dbfs = profile->gate_minimum_dbfs;

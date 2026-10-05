@@ -35,6 +35,7 @@ auris_activity_defaults_for(const auris_capture_profile_t *profile) {
     c.weighting = profile->snr_weighting;
     if (c.weighting) {
       c.low_hz = profile->weighted_low_hz;
+      c.high_hz = profile->weighted_high_hz;
     }
   }
   return c;

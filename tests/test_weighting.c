@@ -197,7 +197,7 @@ static int test_gate(auris_fft_t *fft) {
   }
   CHECK(auris_activity_init_sized(&gate, &c, RATE, 8U, SIZE, HOP, energy) ==
         AURIS_OK);
-  CHECK(gate.first_bin == 5U && gate.last_bin == 85U);
+  CHECK(gate.first_bin == 5U && gate.last_bin == 128U);
   auris_activity_config_t bad = c;
   bad.noise_bias = 0.5f;
   CHECK(auris_activity_init_sized(&level_gate, &bad, RATE, 8U, SIZE, HOP,
@@ -242,7 +242,7 @@ static int test_gate(auris_fft_t *fft) {
     CHECK(level_out.weight_sum == 0.0f);
     for (size_t k = 0U; k <= SIZE / 2U; ++k) {
       CHECK(gate.weights[k] >= 0.0f && gate.weights[k] < 1.0f);
-      CHECK((k >= 5U && k <= 85U) || gate.weights[k] == 0.0f);
+      CHECK((k >= 5U && k <= 128U) || gate.weights[k] == 0.0f);
     }
     const uint64_t f = frame.first_frame;
     if (!out.ready) {

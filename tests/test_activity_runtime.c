@@ -38,7 +38,7 @@ static int test_profiles(void) {
   /* Module 27: the CMB's gate weights bins, so its band reaches 200 Hz. */
   CHECK(cmb->snr_weighting && !rs->snr_weighting);
   CHECK(cmb->weighted_low_hz == 200.0f);
-  CHECK(c.weighting && c.low_hz == 200.0f && c.high_hz == 4000.0f &&
+  CHECK(c.weighting && c.low_hz == 200.0f && c.high_hz == 6000.0f &&
         c.minimum_dbfs == -70.0f);
   CHECK(!auris_activity_defaults_for(rs).weighting &&
         auris_activity_defaults_for(rs).low_hz == 500.0f);
@@ -59,6 +59,7 @@ static auris_activity_config_t unweighted_cmb(void) {
   auris_activity_config_t c = auris_activity_defaults_for(auris_capture_cmb());
   c.weighting = false;
   c.low_hz = auris_capture_cmb()->band_low_hz;
+  c.high_hz = auris_capture_cmb()->band_high_hz;
   return c;
 }
 

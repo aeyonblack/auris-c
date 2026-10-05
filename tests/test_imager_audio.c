@@ -46,7 +46,7 @@ static int test_plans(void) {
         plan.frame_hop == 512U && plan.upsample == 4U);
   /* Module 27: SNR-weighted, so the band reaches down to 200 Hz. */
   CHECK(plan.weighting && plan.coherence_min == 0.15f);
-  CHECK(plan.band_low_hz == 200.0f && plan.band_high_hz == 4000.0f);
+  CHECK(plan.band_low_hz == 200.0f && plan.band_high_hz == 6000.0f);
   CHECK(strcmp(plan.device, "hw:AurisCMB") == 0);
   options.weighting = -1;
   CHECK(imager_audio_plan(&options, &plan) == 0);
