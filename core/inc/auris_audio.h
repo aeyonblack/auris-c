@@ -44,6 +44,13 @@ typedef struct {
   float weighted_high_hz;  /* and its upper edge */
   float diffuse_rejection; /* 0..1: how far pairs discount bins that carry
                               the room rather than the source */
+  /* Bins below height_split_hz always place the column of the estimate.
+     How much say they keep between rows falls from all of it to
+     height_keep (0..1] as the weight of the bins above the split, over the
+     last second, grows to height_share of theirs. 0 Hz: off. */
+  float height_split_hz;
+  float height_keep;
+  float height_share;
   float coherence_min;     /* least SRP coherence for a map to be shown */
 } auris_capture_profile_t;
 

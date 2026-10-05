@@ -16,6 +16,9 @@ static const auris_capture_profile_t RESPEAKER_USB = {
     .weighted_low_hz = 500.0f,
     .weighted_high_hz = 3000.0f,
     .diffuse_rejection = 0.0f,
+    .height_split_hz = 0.0f,
+    .height_keep = 1.0f,
+    .height_share = 0.0f,
     .coherence_min = 0.0f};
 
 /* McASP6 receiving four I2S lines from two PCM1865s (CMB is clock master):
@@ -51,6 +54,17 @@ static const auris_capture_profile_t CMB = {
        pair nearly in phase, which reads as "straight ahead". 0.75 brings
        the 2.9 degrees down to 1.4; at 1.0 a voice at 2 m is rarely shown. */
     .diffuse_rejection = 0.75f,
+    /* The array is 104 mm across: below about 4 kHz its beam is too wide to
+       tell a source from its reflection off the floor or the ceiling, which
+       lie in the same column of the view. Those bins drew a source held
+       high up to 3 degrees too high and one near the floor 5 too low
+       (recordings/room2). Bins above 4 kHz place the height within about a
+       degree, when the sound has any: a voice at 1 m has almost none, so
+       the low bins keep their say until the high bins carry a tenth of
+       their weight. */
+    .height_split_hz = 4000.0f,
+    .height_keep = 0.1f,
+    .height_share = 0.1f,
     /* Unrelated noise on eight microphones scores below 0.1; the weakest
        real source in the room1 test set scored 0.26. */
     .coherence_min = 0.15f};
