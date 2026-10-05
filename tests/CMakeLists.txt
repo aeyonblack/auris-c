@@ -310,3 +310,18 @@ target_link_libraries(test_diffuse PRIVATE auris_imager_audio)
 auris_set_warnings(test_diffuse)
 auris_enable_sanitizers(test_diffuse)
 add_test(NAME diffuse COMMAND test_diffuse)
+
+# Height from the high bins: bins below a split frequency decide the column
+# and keep only part of their say between rows.
+add_executable(test_height test_height.c)
+target_link_libraries(test_height PRIVATE auris_imager_audio)
+auris_set_warnings(test_height)
+auris_enable_sanitizers(test_height)
+add_test(NAME height COMMAND test_height)
+
+# The imager's search grid: a margin above and below the camera picture.
+add_executable(test_search_view test_search_view.c)
+target_link_libraries(test_search_view PRIVATE auris_imager_audio)
+auris_set_warnings(test_search_view)
+auris_enable_sanitizers(test_search_view)
+add_test(NAME search_view COMMAND test_search_view)
