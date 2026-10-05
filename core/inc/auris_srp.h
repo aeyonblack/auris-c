@@ -51,6 +51,15 @@ auris_status_t auris_srp_apply(auris_srp_t *state, auris_fft_t *fft,
                                const auris_spectrum_t *spectrum,
                                auris_srp_result_t *out);
 auris_status_t auris_srp_set_smoothing(auris_srp_t *s, float seconds);
+/* Diffuse-field rejection, off by default. Sound that has bounced around a
+   room reaches two microphones d apart with coherence sin(x) / x, where
+   x = 2 pi f d / c: at low frequencies and for close pairs it arrives
+   nearly in phase, which PHAT reads as a source straight ahead of a flat
+   array. Each pair then keeps 1 - strength * (sin(x) / x)^2 of each bin:
+   less where the room would dominate, everything where it averages out.
+   `strength` is 0 (off) to 1. result.weight counts the bins kept, so
+   coherence keeps its meaning. */
+auris_status_t auris_srp_set_diffuse_rejection(auris_srp_t *s, float strength);
 void auris_srp_reset(auris_srp_t *state);
 auris_status_t auris_srp_set_grid(auris_srp_t *state,
     size_t columns, size_t rows, size_t step);

@@ -25,6 +25,8 @@ struct auris_srp {
   size_t frame_size, frame_hop, upsample, curve_size;
   float *curves;  /* pair_count rows of curve_size floats */
   float *scratch; /* curve_size floats */
+  float speed_of_sound_mps;
+  float *gains; /* pair_count rows of frame_size / 2 + 1 bin gains, or NULL */
   float smoothing_alpha;
   float weight; /* smoothed mean pair weight, in bins */
   uint64_t next_frame;
@@ -51,11 +53,44 @@ auris_status_t auris_srp_set_smoothing(auris_srp_t *s, float seconds) {
   return AURIS_OK;
 }
 
+auris_status_t auris_srp_set_diffuse_rejection(auris_srp_t *s, float strength) {
+  if (s == NULL || !isfinite(strength) || strength < 0.0f || strength > 1.0f) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  auris_srp_reset(s);
+  if (strength == 0.0f) {
+    free(s->gains);
+    s->gains = NULL;
+    return AURIS_OK;
+  }
+  const size_t bins = s->frame_size / 2U + 1U;
+  if (s->gains == NULL) {
+    s->gains = calloc(s->pair_count * bins, sizeof(*s->gains));
+    if (s->gains == NULL) {
+      return AURIS_ERROR_INTERNAL;
+    }
+  }
+  const double bin_hz = (double)s->sample_rate / (double)s->frame_size;
+  for (size_t p = 0U; p < s->pair_count; ++p) {
+    const double radians_per_hz = 6.283185307179586 *
+                                  (double)s->pairs[p].distance_m /
+                                  (double)s->speed_of_sound_mps;
+    for (size_t k = 0U; k < bins; ++k) {
+      const double x = radians_per_hz * (double)k * bin_hz;
+      const double coherence = x < 1.0e-6 ? 1.0 : sin(x) / x;
+      s->gains[p * bins + k] =
+          (float)(1.0 - (double)strength * coherence * coherence);
+    }
+  }
+  return AURIS_OK;
+}
+
 void auris_srp_destroy(auris_srp_t *state) {
   if (state != NULL) {
     free(state->table);
     free(state->curves);
     free(state->scratch);
+    free(state->gains);
     free(state);
   }
 }
@@ -89,6 +124,7 @@ auris_srp_t *auris_srp_create_sized(const auris_array_t *array,
   s->upsample = upsample;
   s->curve_size = frame_size * upsample;
   s->smoothing_alpha = 1.0f;
+  s->speed_of_sound_mps = array->speed_of_sound_mps;
   s->channels = array->microphone_count;
   s->count = count;
   memcpy(s->directions, directions, count * sizeof(*directions));
@@ -250,9 +286,11 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
   for (size_t p = 0U; p < s->pair_count; ++p) {
     bool valid = false;
     float pair_weight = 0.0f;
-    if (auris_gcc_phat_curve_weighted(fft, spectrum, s->pairs[p].first,
-                                      s->pairs[p].second, s->scratch, &valid,
-                                      &pair_weight) != AURIS_OK) {
+    const float *gains =
+        s->gains == NULL ? NULL : &s->gains[p * (s->frame_size / 2U + 1U)];
+    if (auris_gcc_phat_curve_gained(fft, spectrum, s->pairs[p].first,
+                                    s->pairs[p].second, gains, s->scratch,
+                                    &valid, &pair_weight) != AURIS_OK) {
       auris_srp_reset(s);
       return AURIS_ERROR_INTERNAL;
     }
