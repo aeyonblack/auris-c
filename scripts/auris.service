@@ -1,0 +1,15 @@
+[Unit]
+Description=Auris acoustic imager on the panel
+After=sound.target
+
+[Service]
+User=debian
+ExecStart=/home/debian/src/auris-c/scripts/auris-start.sh
+StandardInput=null
+StandardOutput=null
+StandardError=journal
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
