@@ -1,4 +1,4 @@
-add_library(auris_image STATIC src/auris_image.c)
+add_library(auris_image STATIC src/auris_image.c src/auris_exposure.c)
 target_include_directories(auris_image PUBLIC inc)
 target_link_libraries(auris_image PUBLIC m)
 auris_set_warnings(auris_image)
