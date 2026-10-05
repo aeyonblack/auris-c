@@ -9,6 +9,7 @@
 #include "imager_audio.h"
 #include "imager_calibration.h"
 #include <errno.h>
+#include <math.h>
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <pthread.h>
@@ -306,6 +307,7 @@ int main(int argc, char **argv) {
   const char *calibration_path = "configs/camera_calibration.txt";
   imager_audio_options_t audio_options = {.array = "respeaker", .step = 1U};
   const char *audio_file = NULL;
+  float pan_deg = 0.0f, tilt_deg = 0.0f;
   bool usage_error = false;
   for (int i = 1; i < argc; ++i) {
     int parsed=auris_outputs_option(&outputs,argc,argv,&i);
@@ -330,6 +332,12 @@ int main(int argc, char **argv) {
       }
     }
     else if (strcmp(argv[i], "--no-track") == 0) audio_options.tracking = -1;
+    else if (strcmp(argv[i], "--diffuse") == 0 && i + 1 < argc) {
+      char *end = NULL;
+      audio_options.diffuse = strtof(argv[++i], &end);
+      audio_options.diffuse_given = true;
+      if (end == argv[i] || *end != '\0') { usage_error = true; break; }
+    }
     else if (strcmp(argv[i], "--audio-file") == 0 && i + 1 < argc) audio_file = argv[++i];
     else if (strcmp(argv[i], "--array") == 0 && i + 1 < argc) audio_options.array = argv[++i];
     else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) audio_options.device = argv[++i];
@@ -343,6 +351,15 @@ int main(int argc, char **argv) {
       }
       i += 2;
     }
+    else if ((strcmp(argv[i], "--pan") == 0 || strcmp(argv[i], "--tilt") == 0) &&
+             i + 1 < argc) {
+      char *end = NULL;
+      const bool pan = argv[i][2] == 'p';
+      const float value = strtof(argv[++i], &end);
+      if (end == argv[i] || *end != '\0' || !isfinite(value) ||
+          fabsf(value) > 30.0f) { usage_error = true; break; }
+      if (pan) pan_deg = value; else tilt_deg = value;
+    }
     else if (strcmp(argv[i], "--step") == 0 && i + 1 < argc) {
       char *end = NULL;
       audio_options.step = strtoul(argv[++i], &end, 10);
@@ -354,15 +371,16 @@ int main(int argc, char **argv) {
   }
   imager_audio_plan_t plan;
   if (!usage_error && imager_audio_plan(&audio_options, &plan) < 0) {
-    fprintf(stderr, "unknown array, or bad --band/--step (band 0 <= LO < HI <= Nyquist, step 1, 2 or 4)\n");
+    fprintf(stderr, "unknown array, or bad --band/--step/--diffuse (band 0 <= LO < HI <= Nyquist, step 1, 2 or 4, diffuse 0..1)\n");
     usage_error = true;
   }
   if (usage_error) {
     fprintf(stderr,"runtime: [--settings FILE] [--no-ui] [--touch-device PATH]; touch UI defaults on with display, off during calibration\n");
     fprintf(stderr, "usage: %s [--calibrate] [--calibration FILE] [--fps 1..30]\n"
                     "          [--array NAME] [--device D] [--band LO HI] [--step 1|2|4]"
-                    " [--no-track]\n"
+                    " [--no-track] [--diffuse 0..1]\n"
                     "          [--audio-file REC.wav]   (replay a recording, looped, with the live camera)\n"
+                    "          [--pan DEG] [--tilt DEG]   (move the heat map right / up over the picture, -30..30)\n"
                     "       %s [options] ALSA_DEVICE   (ReSpeaker form)\n"
                     "  NAME: %s; the device, band and frame come from the array's profile\n",
             argv[0], argv[0], auris_config_names());
@@ -436,6 +454,10 @@ int main(int argc, char **argv) {
     err = 0;
   } else if (err < 0) goto done;
   else fprintf(stderr, "CAL loaded %s\n", calibration_path);
+  if (auris_view_nudge(&camera_view, pan_deg, tilt_deg) != AURIS_OK) goto done;
+  if (pan_deg != 0.0f || tilt_deg != 0.0f)
+    fprintf(stderr, "CAL heat map moved %+.2f deg right, %+.2f deg up\n",
+            (double)pan_deg, (double)tilt_deg);
   session.baseline = camera_view;
   if (calibrating) {
     stdin_flags = fcntl(STDIN_FILENO, F_GETFL);
@@ -455,7 +477,9 @@ int main(int argc, char **argv) {
           plan.config.array->name, plan.device, plan.frame_size, plan.frame_hop,
           1000.0 * (double)plan.frame_hop / (double)plan.rate,
           (double)plan.band_low_hz, (double)plan.band_high_hz,
-          plan.weighting ? "bins weighted by SNR" : "level gate",
+          plan.weighting ? (plan.diffuse > 0.0f ? "bins weighted by SNR and against "
+                                           "the room" : "bins weighted by SNR")
+                         : "level gate",
           !settings.smoothing ? "raw maps (smoothing off)"
           : plan.tracking ? "tracked, held 0.6 s"
                           : "0.1 s smoothing (tracker off)",
