@@ -10,8 +10,7 @@ add_executable(camera_scope camera_scope.c)
 target_link_libraries(
   camera_scope
   PRIVATE
-    auris_camera
-    auris_image
+    auris_camera_chain
     auris_outputs
 )
 
@@ -104,8 +103,15 @@ target_link_libraries(auris_imager_audio PUBLIC auris_core auris_config)
 auris_set_warnings(auris_imager_audio)
 auris_enable_sanitizers(auris_imager_audio)
 
+add_library(auris_camera_chain STATIC camera_chain.c)
+target_include_directories(auris_camera_chain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(auris_camera_chain PUBLIC auris_camera auris_image)
+auris_set_warnings(auris_camera_chain)
+auris_enable_sanitizers(auris_camera_chain)
+
 add_executable(imager_scope imager_scope.c)
 target_link_libraries(imager_scope PRIVATE auris_audio auris_config auris_imager_audio
+  auris_camera_chain
   auris_camera auris_calibration_session auris_outputs auris_control Threads::Threads)
 target_compile_definitions(imager_scope PRIVATE _POSIX_C_SOURCE=200809L)
 auris_set_warnings(imager_scope)
