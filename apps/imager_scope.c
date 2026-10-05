@@ -21,9 +21,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define COLUMNS 65U
-#define ROWS 49U
-#define DIRECTIONS (COLUMNS * ROWS)
+#define COLUMNS IMAGER_COLUMNS
+#define ROWS IMAGER_ROWS
+#define DIRECTIONS IMAGER_DIRECTIONS
 #define MAX_AGE_US 250000U
 #define MAX_SKEW_US 100000U
 
@@ -332,6 +332,18 @@ int main(int argc, char **argv) {
       }
     }
     else if (strcmp(argv[i], "--no-track") == 0) audio_options.tracking = -1;
+    else if (strcmp(argv[i], "--height") == 0 && i + 3 < argc) {
+      char *end1 = NULL, *end2 = NULL, *end3 = NULL;
+      audio_options.height_split_hz = strtof(argv[i + 1], &end1);
+      audio_options.height_keep = strtof(argv[i + 2], &end2);
+      audio_options.height_share = strtof(argv[i + 3], &end3);
+      audio_options.height_given = true;
+      if (*end1 != '\0' || *end2 != '\0' || *end3 != '\0' ||
+          end1 == argv[i + 1] || end2 == argv[i + 2] || end3 == argv[i + 3]) {
+        usage_error = true; break;
+      }
+      i += 3;
+    }
     else if (strcmp(argv[i], "--diffuse") == 0 && i + 1 < argc) {
       char *end = NULL;
       audio_options.diffuse = strtof(argv[++i], &end);
@@ -379,6 +391,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: %s [--calibrate] [--calibration FILE] [--fps 1..30]\n"
                     "          [--array NAME] [--device D] [--band LO HI] [--step 1|2|4]"
                     " [--no-track] [--diffuse 0..1]\n"
+                    "          [--height HZ KEEP SHARE]   (bins below HZ keep KEEP of their say on height once the bins above weigh SHARE of them; 0 1 0: off)\n"
                     "          [--audio-file REC.wav]   (replay a recording, looped, with the live camera)\n"
                     "          [--pan DEG] [--tilt DEG]   (move the heat map right / up over the picture, -30..30)\n"
                     "       %s [options] ALSA_DEVICE   (ReSpeaker form)\n"
@@ -405,10 +418,7 @@ int main(int argc, char **argv) {
   action.sa_handler = SIG_IGN;
   if (sigaction(SIGPIPE, &action, NULL)) return EXIT_FAILURE;
 
-  const auris_view_t search = {
-      .width = 640U, .height = 480U, .fx = 480.0f, .fy = 480.0f,
-      .cx = 319.5f, .cy = 239.5f,
-      .rotation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+  const auris_view_t search = imager_search_view();
   auris_view_t camera_view = {
       .width = 1640U, .height = 1232U, .fx = 1358.5007f, .fy = 1356.8622f,
       .cx = 819.5f, .cy = 615.5f,
@@ -484,6 +494,11 @@ int main(int argc, char **argv) {
           : plan.tracking ? "tracked, held 0.6 s"
                           : "0.1 s smoothing (tracker off)",
           plan.step, plan.history);
+  if (plan.height_split_hz > 0.0f)
+    fprintf(stderr, "audio: height from the bins above %.0f Hz once they "
+            "weigh %.2f of the rest; lower bins then keep %.2f of their say "
+            "on it\n", (double)plan.height_split_hz,
+            (double)plan.height_share, (double)plan.height_keep);
   err = auris_camera_open(&camera, &capture);
   if (err < 0) goto done;
   const auris_camera_format_t *format = auris_camera_format(camera);
