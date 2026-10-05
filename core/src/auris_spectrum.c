@@ -167,19 +167,24 @@ static bool pair_valid(const auris_fft_t *fft, const auris_spectrum_t *s,
 }
 
 /* Writes the PHAT-weighted cross-spectrum B x conj(A) into the scratch
-   spectrum, zero everywhere except the interior bins 1..size/2-1, and
+   spectrum, zero everywhere except bins first..last (kept inside the
+   interior bins 1..size/2-1), and
    clears the rest of the (possibly longer) fine spectrum. Each bin's unit
    phasor is scaled by its weight and, when `gains` is given, by the pair's
    gain for that bin; *weight receives the total that voted. */
 static bool prepare_phat(auris_fft_t *fft, const auris_spectrum_t *s, size_t a,
-                         size_t b, const float *gains, float *weight) {
+                         size_t b, const float *gains, size_t first,
+                         size_t last, float *weight) {
   const float epsilon = 1.0e-12f;
   const size_t bins = fft->size / 2U + 1U;
   bool valid = false;
   float total = 0.0f;
   memset(fft->frequency, 0,
          (fft->size * fft->upsample / 2U + 1U) * sizeof(fftwf_complex));
-  for (size_t k = 1U; k + 1U < bins; ++k) {
+  if (first < 1U) {
+    first = 1U;
+  }
+  for (size_t k = first; k + 1U < bins && k <= last; ++k) {
     const float ar = s->bins[a][k][0];
     const float ai = s->bins[a][k][1];
     const float br = s->bins[b][k][0];
@@ -213,7 +218,7 @@ auris_status_t auris_gcc_phat(auris_fft_t *fft, const auris_spectrum_t *s,
   out->size = size;
   out->lag_samples = 0;
   out->peak = 0.0f;
-  out->valid = prepare_phat(fft, s, a, b, NULL, NULL);
+  out->valid = prepare_phat(fft, s, a, b, NULL, 1U, fft->size / 2U, NULL);
   fftwf_execute(fft->inverse);
   for (size_t n = 0U; n < size; ++n) {
     out->correlation[n] = fft->time[n] / (float)size;
@@ -252,11 +257,25 @@ auris_status_t auris_gcc_phat_curve_gained(auris_fft_t *fft,
                                            size_t b, const float *gains,
                                            float *curve, bool *valid,
                                            float *weight) {
-  if (curve == NULL || valid == NULL || weight == NULL ||
-      !pair_valid(fft, s, a, b)) {
+  if (fft == NULL) {
     return AURIS_ERROR_INVALID_ARGUMENT;
   }
-  *valid = prepare_phat(fft, s, a, b, gains, weight);
+  return auris_gcc_phat_curve_band(fft, s, a, b, gains, 1U, fft->size / 2U,
+                                   curve, valid, weight);
+}
+
+auris_status_t auris_gcc_phat_curve_band(auris_fft_t *fft,
+                                         const auris_spectrum_t *s, size_t a,
+                                         size_t b, const float *gains,
+                                         size_t first_bin, size_t last_bin,
+                                         float *curve, bool *valid,
+                                         float *weight) {
+  if (curve == NULL || valid == NULL || weight == NULL ||
+      !pair_valid(fft, s, a, b) || first_bin > last_bin ||
+      last_bin > fft->size / 2U) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  *valid = prepare_phat(fft, s, a, b, gains, first_bin, last_bin, weight);
   fftwf_execute(fft->fine_inverse);
   /* Divide by the frame length, not the fine length, so the curve has the
      same scale as auris_gcc_phat's correlation at every upsampling factor. */

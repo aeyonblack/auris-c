@@ -88,5 +88,13 @@ auris_status_t auris_gcc_phat_curve_gained(auris_fft_t *fft,
                                            size_t a, size_t b,
                                            const float *gains, float *curve,
                                            bool *valid, float *weight);
+/* As auris_gcc_phat_curve_gained, from bins first_bin..last_bin only (DC
+   and Nyquist are never used). first_bin <= last_bin <= size / 2. */
+auris_status_t auris_gcc_phat_curve_band(auris_fft_t *fft,
+                                         const auris_spectrum_t *spectrum,
+                                         size_t a, size_t b, const float *gains,
+                                         size_t first_bin, size_t last_bin,
+                                         float *curve, bool *valid,
+                                         float *weight);
 
 #endif
