@@ -41,6 +41,9 @@ typedef struct {
   float gate_minimum_dbfs; /* activity gate's absolute floor for this gain */
   bool snr_weighting;      /* weight PHAT bins by their SNR; gate on weight */
   float weighted_low_hz;   /* the band's lower edge when weighting is on */
+  float weighted_high_hz;  /* and its upper edge */
+  float diffuse_rejection; /* 0..1: how far pairs discount bins that carry
+                              the room rather than the source */
   float coherence_min;     /* least SRP coherence for a map to be shown */
 } auris_capture_profile_t;
 
