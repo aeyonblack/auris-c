@@ -101,40 +101,41 @@ done:
 
 int main(void) {
   int result = EXIT_FAILURE;
-  auris_fft_t *fft = auris_fft_create_size(64U, 4U);
+  auris_fft_t *fft = auris_fft_create_size(256U, 4U);
   CHECK(fft != NULL);
-  /* The CMB set-up: 1024-sample frames, 8x, both halves of the height band,
+  /* (Frames of at least 256 samples: smaller ones are not a valid analysis
+     size for this hop rule.) The CMB set-up: 1024-sample frames, 8x, both halves of the height band,
      on a spectrum limited to 200-6000 Hz, with weights and gains. */
   CHECK(compare(1024U, 8U, 1U, 85U, true, true, 5U, 128U, 1U) == 0);
   CHECK(compare(1024U, 8U, 86U, 512U, true, true, 5U, 128U, 2U) == 0);
   /* Full spectra, no gains or weights; the ReSpeaker set-up; a short frame. */
   CHECK(compare(1024U, 8U, 1U, 512U, false, false, 0U, 0U, 3U) == 0);
   CHECK(compare(512U, 4U, 1U, 256U, true, false, 0U, 0U, 4U) == 0);
-  CHECK(compare(64U, 1U, 3U, 20U, false, true, 0U, 0U, 5U) == 0);
-  CHECK(compare(64U, 4U, 1U, 32U, true, true, 2U, 30U, 6U) == 0);
+  CHECK(compare(256U, 1U, 3U, 20U, false, true, 0U, 0U, 5U) == 0);
+  CHECK(compare(256U, 4U, 1U, 128U, true, true, 2U, 30U, 6U) == 0);
 
   /* Arguments. */
   memset(&spectrum, 0, sizeof(spectrum));
   spectrum.sample_rate = 48000U;
   spectrum.channels = 2U;
-  spectrum.size = 64U;
+  spectrum.size = 256U;
   spectrum.bins[0][3][0] = 1.0f;
   spectrum.bins[1][3][0] = 1.0f;
   int lags[3] = {-1, 0, 1};
   float values[3];
   bool valid = false;
   float weight = 0.0f;
-  /* Nothing reserved yet; then more than half the 256-point fine curve. */
+  /* Nothing reserved yet; then more than half the 1024-point fine curve. */
   CHECK(auris_gcc_phat_lags(fft, &spectrum, 0U, 1U, NULL, 1U, 32U, lags, 3U,
                             values, &valid, &weight) ==
         AURIS_ERROR_INVALID_ARGUMENT);
-  CHECK(auris_fft_reserve_lags(fft, 129U) == AURIS_ERROR_INVALID_ARGUMENT);
+  CHECK(auris_fft_reserve_lags(fft, 513U) == AURIS_ERROR_INVALID_ARGUMENT);
   CHECK(auris_fft_reserve_lags(NULL, 1U) == AURIS_ERROR_INVALID_ARGUMENT);
   CHECK(auris_fft_reserve_lags(fft, 32U) == AURIS_OK);
   CHECK(auris_gcc_phat_lags(fft, &spectrum, 0U, 1U, NULL, 1U, 32U, lags, 3U,
                             values, &valid, &weight) == AURIS_OK);
   CHECK(valid && weight == 1.0f);
-  CHECK(fabsf(values[1] - 2.0f / 64.0f) < 1.0e-7f);
+  CHECK(fabsf(values[1] - 2.0f / 256.0f) < 1.0e-7f);
   CHECK(auris_gcc_phat_lags(NULL, &spectrum, 0U, 1U, NULL, 1U, 32U, lags, 3U,
                             values, &valid, &weight) ==
         AURIS_ERROR_INVALID_ARGUMENT);
