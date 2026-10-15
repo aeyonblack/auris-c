@@ -18,4 +18,10 @@ int auris_output_open_display(auris_output_t **out, uint32_t width,
 int auris_display_pack(const auris_rgb24_t *source, uint32_t *destination,
                        uint32_t width, uint32_t height, size_t pitch,
                        size_t capacity, unsigned int rotation);
+/* Where an image_w x image_h picture goes on a panel_w x panel_h panel: as
+   large as fits with its shape kept, centred. The rectangle auris_display_pack
+   fills, and the one the display plane scales the picture into. */
+int auris_display_fit(uint32_t image_w, uint32_t image_h, uint32_t panel_w,
+                      uint32_t panel_h, uint32_t *x, uint32_t *y, uint32_t *w,
+                      uint32_t *h);
 #endif

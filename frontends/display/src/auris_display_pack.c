@@ -16,19 +16,21 @@ int auris_display_pack(const auris_rgb24_t *s, uint32_t *dst,
   const bool turn = rotation == 90U || rotation == 270U;
   const uint32_t rw = turn ? s->height : s->width;
   const uint32_t rh = turn ? s->width : s->height;
-  uint32_t fw=w, fh=h;
-  if ((uint64_t)w*rh <= (uint64_t)h*rw) fh=(uint32_t)((uint64_t)w*rh/rw);
-  else fw=(uint32_t)((uint64_t)h*rw/rh);
-  if (!fw) fw=1U;
-  if (!fh) fh=1U;
-  const uint32_t ox=(w-fw)/2U, oy=(h-fh)/2U;
+  uint32_t ox=0U, oy=0U, fw=0U, fh=0U;
+  if (auris_display_fit(rw,rh,w,h,&ox,&oy,&fw,&fh)) return -EINVAL;
+  /* Source column of every output column, worked out once per call (a
+     division per pixel cost more than the copy itself). */
+  uint32_t columns[8192];
+  for (uint32_t x=0U; x<fw; ++x)
+    columns[x]=fw==rw ? x : (uint32_t)(((uint64_t)x*2U+1U)*rw/(2U*fw));
   for (uint32_t y=0U; y<h; ++y) {
     uint32_t *line=dst+(size_t)y*(pitch/4U);
-    memset(line, 0, dest_row);
-    if (y<oy || y>=oy+fh) continue;
-    const uint32_t ry=(uint32_t)(((uint64_t)(y-oy)*2U+1U)*rh/(2U*fh));
+    if (y<oy || y>=oy+fh) { memset(line, 0, dest_row); continue; }
+    if (ox) memset(line, 0, (size_t)ox*4U);
+    if (ox+fw<w) memset(line+ox+fw, 0, (size_t)(w-ox-fw)*4U);
+    const uint32_t ry=fh==rh ? y-oy : (uint32_t)(((uint64_t)(y-oy)*2U+1U)*rh/(2U*fh));
     for (uint32_t x=0U; x<fw; ++x) {
-      const uint32_t rx=(uint32_t)(((uint64_t)x*2U+1U)*rw/(2U*fw));
+      const uint32_t rx=columns[x];
       uint32_t sx=rx, sy=ry;
       if (rotation==90U) { sx=ry; sy=s->height-1U-rx; }
       else if (rotation==180U) { sx=s->width-1U-rx; sy=s->height-1U-ry; }
@@ -37,5 +39,21 @@ int auris_display_pack(const auris_rgb24_t *s, uint32_t *dst,
       line[ox+x]=((uint32_t)p[0]<<16U)|((uint32_t)p[1]<<8U)|p[2];
     }
   }
+  return 0;
+}
+
+int auris_display_fit(uint32_t image_w, uint32_t image_h, uint32_t panel_w,
+                      uint32_t panel_h, uint32_t *x, uint32_t *y, uint32_t *w,
+                      uint32_t *h) {
+  if (!x || !y || !w || !h || !image_w || !image_h || !panel_w || !panel_h ||
+      image_w > 8192U || image_h > 8192U || panel_w > 8192U || panel_h > 8192U)
+    return -EINVAL;
+  uint32_t fw=panel_w, fh=panel_h;
+  if ((uint64_t)panel_w*image_h <= (uint64_t)panel_h*image_w)
+    fh=(uint32_t)((uint64_t)panel_w*image_h/image_w);
+  else fw=(uint32_t)((uint64_t)panel_h*image_w/image_h);
+  if (!fw) fw=1U;
+  if (!fh) fh=1U;
+  *x=(panel_w-fw)/2U; *y=(panel_h-fh)/2U; *w=fw; *h=fh;
   return 0;
 }

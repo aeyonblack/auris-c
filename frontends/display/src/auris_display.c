@@ -29,7 +29,18 @@ typedef struct {
   unsigned int front, rotation;
   bool modeset, pending;
   uint64_t last_check;
+  /* Display-plane path: the picture is packed at its own (rotated) size into
+     `small` and an overlay plane scales it to dst_* on the panel, while the
+     primary plane shows buffers[0], left black. plane 0: CPU path. */
+  uint32_t plane, small_w, small_h, dst_x, dst_y, dst_w, dst_h;
+  buffer_t small[2];
+  bool plane_shown;
+  /* Overlay planes that could carry it, tried in order until one accepts:
+     on the AM68/TDA4 display controller only some pipelines can scale. */
+  uint32_t candidates[8];
+  size_t candidate_count, candidate_next;
 } display_t;
+static void raise_plane(display_t *s,uint32_t found);
 
 static uint64_t now_us(void) {
   struct timespec t;
@@ -68,6 +79,40 @@ static int present(void *context, const auris_rgb24_t *rgb,
     if (err<0) return err;
     s->last_check=began;
   }
+  if (s->plane) {
+    buffer_t *p=&s->small[1U-s->front];
+    int err=auris_display_pack(rgb,p->map,s->small_w,s->small_h,p->pitch,
+                               p->bytes,s->rotation);
+    stats->encode_us=now_us()-began;
+    stats->encoded_bytes=p->bytes;
+    if (err<0) return err;
+    if (cancel(token)) return -ECANCELED;
+    began=now_us();
+    for (;;) {
+      /* Waits for the vertical blank, like the page flip below. */
+      if (drmModeSetPlane(s->fd,s->plane,s->crtc,p->fb,0U,(int32_t)s->dst_x,
+                          (int32_t)s->dst_y,s->dst_w,s->dst_h,0U,0U,
+                          s->small_w<<16U,s->small_h<<16U)==0) {
+        if (!s->plane_shown)
+          fprintf(stderr,"display: plane %u scales %ux%u to %ux%u at %u,%u\n",s->plane,
+                  s->small_w,s->small_h,s->dst_w,s->dst_h,s->dst_x,s->dst_y);
+        s->plane_shown=true;
+        s->front=1U-s->front;
+        stats->write_us=now_us()-began;
+        return 0;
+      }
+      err=-errno;
+      if (s->plane_shown) return err;
+      fprintf(stderr,"display: plane %u refused the picture (%s)\n",s->plane,strerror(-err));
+      if (s->candidate_next>=s->candidate_count) break;
+      s->plane=s->candidates[s->candidate_next++];
+      raise_plane(s,s->plane);
+    }
+    fprintf(stderr,"display: no plane can scale it; scaling on the CPU\n");
+    s->plane=0U;
+    s->front=0U;
+    began=now_us();
+  }
   buffer_t *b=&s->buffers[1U-s->front];
   int err=auris_display_pack(rgb,b->map,s->mode.hdisplay,s->mode.vdisplay,
                              b->pitch,b->bytes,s->rotation);
@@ -97,6 +142,8 @@ static int present(void *context, const auris_rgb24_t *rgb,
 static void close_display(void *context) {
   display_t *s=context;
   if (!s) return;
+  if (s->fd>=0 && s->plane_shown)
+    (void)drmModeSetPlane(s->fd,s->plane,s->crtc,0U,0U,0,0,0U,0U,0U,0U,0U,0U);
   if (s->fd>=0 && s->modeset && s->saved) {
     int rc;
     if (s->saved->mode_valid)
@@ -106,8 +153,8 @@ static void close_display(void *context) {
     else rc=drmModeSetCrtc(s->fd,s->crtc,0U,0U,0U,NULL,0,NULL);
     if (rc) fprintf(stderr,"display: previous mode restore failed: %s\n",strerror(errno));
   }
-  for (size_t i=0U;i<2U;++i) {
-    buffer_t *b=&s->buffers[i];
+  for (size_t i=0U;i<4U;++i) {
+    buffer_t *b=i<2U ? &s->buffers[i] : &s->small[i-2U];
     if (b->map) (void)munmap(b->map,b->bytes);
     if (b->fb) (void)drmModeRmFB(s->fd,b->fb);
     if (b->handle) {
@@ -120,9 +167,9 @@ static void close_display(void *context) {
   if (s->fd>=0) { (void)drmDropMaster(s->fd); (void)close(s->fd); }
   free(s);
 }
-static int allocate_buffer(display_t *s,buffer_t *b) {
+static int allocate_sized(display_t *s,buffer_t *b,uint32_t w,uint32_t h) {
   struct drm_mode_create_dumb create={0};
-  create.width=s->mode.hdisplay; create.height=s->mode.vdisplay; create.bpp=32U;
+  create.width=w; create.height=h; create.bpp=32U;
   if (drmIoctl(s->fd,DRM_IOCTL_MODE_CREATE_DUMB,&create)) return -errno;
   b->handle=create.handle; b->pitch=create.pitch;
   if (create.size>SIZE_MAX) return -EOVERFLOW;
@@ -136,6 +183,53 @@ static int allocate_buffer(display_t *s,buffer_t *b) {
   if (memory==MAP_FAILED) return -errno;
   b->map=memory; memset(b->map,0,b->bytes);
   return 0;
+}
+static int allocate_buffer(display_t *s,buffer_t *b) {
+  return allocate_sized(s,b,s->mode.hdisplay,s->mode.vdisplay);
+}
+/* Raises an overlay plane above the primary plane where it has zpos. */
+static void raise_plane(display_t *s,uint32_t found) {
+  drmModeObjectProperties *props=drmModeObjectGetProperties(s->fd,found,DRM_MODE_OBJECT_PLANE);
+  if (props) {
+    for (uint32_t i=0U;i<props->count_props;++i) {
+      drmModePropertyRes *prop=drmModeGetProperty(s->fd,props->props[i]);
+      if (!prop) continue;
+      if (!strcmp(prop->name,"zpos") && (prop->flags&DRM_MODE_PROP_RANGE) &&
+          prop->count_values==2 && prop->values[1]>=1U && props->prop_values[i]<1U)
+        (void)drmModeObjectSetProperty(s->fd,found,DRM_MODE_OBJECT_PLANE,prop->prop_id,1U);
+      drmModeFreeProperty(prop);
+    }
+    drmModeFreeObjectProperties(props);
+  }
+}
+/* Overlay planes that can show XRGB8888 on our CRTC (legacy clients only see
+   overlay planes), in the driver's order; returns the first. */
+static uint32_t find_planes(display_t *s) {
+  drmModeRes *r=drmModeGetResources(s->fd);
+  if (!r) return 0U;
+  int index=-1;
+  for (int i=0;i<r->count_crtcs;++i) if (r->crtcs[i]==s->crtc) index=i;
+  drmModeFreeResources(r);
+  if (index<0 || index>=32) return 0U;
+  drmModePlaneRes *planes=drmModeGetPlaneResources(s->fd);
+  if (!planes) return 0U;
+  s->candidate_count=0U;
+  for (uint32_t i=0U;i<planes->count_planes && s->candidate_count<8U;++i) {
+    drmModePlane *p=drmModeGetPlane(s->fd,planes->planes[i]);
+    if (!p) continue;
+    if ((p->possible_crtcs&(1U<<(unsigned int)index)) && !p->crtc_id)
+      for (uint32_t f=0U;f<p->count_formats;++f)
+        if (p->formats[f]==DRM_FORMAT_XRGB8888) {
+          s->candidates[s->candidate_count++]=p->plane_id;
+          break;
+        }
+    drmModeFreePlane(p);
+  }
+  drmModeFreePlaneResources(planes);
+  if (!s->candidate_count) return 0U;
+  s->candidate_next=1U;
+  raise_plane(s,s->candidates[0]);
+  return s->candidates[0];
 }
 static int select_display(display_t *s, const char *path, uint32_t requested) {
   s->fd=open(path,O_RDWR|O_CLOEXEC);
@@ -215,8 +309,27 @@ int auris_output_open_display_info(auris_output_t **out,uint32_t w,uint32_t h,
   uint64_t dumb=0U;
   if (drmGetCap(s->fd,DRM_CAP_DUMB_BUFFER,&dumb) || !dumb) { err=-ENOTSUP; goto fail; }
   for (size_t i=0U;i<2U;++i) { err=allocate_buffer(s,&s->buffers[i]); if (err<0) goto fail; }
-  fprintf(stderr,"display: connector %u, preferred mode %ux%u, rotation %u, XRGB8888\n",
-          s->connector,s->mode.hdisplay,s->mode.vdisplay,s->rotation);
+  /* AURIS_DISPLAY_CPU_SCALE=1 keeps the CPU path, for comparison. */
+  const char *cpu=getenv("AURIS_DISPLAY_CPU_SCALE");
+  if (!(cpu && *cpu && strcmp(cpu,"0"))) {
+    const bool turn=s->rotation==90U || s->rotation==270U;
+    s->small_w=turn ? h : w; s->small_h=turn ? w : h;
+    s->plane=find_planes(s);
+    if (s->plane && (auris_display_fit(s->small_w,s->small_h,s->mode.hdisplay,
+                                       s->mode.vdisplay,&s->dst_x,&s->dst_y,
+                                       &s->dst_w,&s->dst_h) ||
+                     allocate_sized(s,&s->small[0],s->small_w,s->small_h)<0 ||
+                     allocate_sized(s,&s->small[1],s->small_w,s->small_h)<0))
+      s->plane=0U;
+  }
+  if (s->plane)
+    fprintf(stderr,"display: connector %u, preferred mode %ux%u, rotation %u, XRGB8888, "
+            "%zu overlay plane(s) to try for scaling %ux%u to %ux%u\n",s->connector,
+            s->mode.hdisplay,s->mode.vdisplay,s->rotation,s->candidate_count,s->small_w,
+            s->small_h,s->dst_w,s->dst_h);
+  else
+    fprintf(stderr,"display: connector %u, preferred mode %ux%u, rotation %u, XRGB8888, "
+            "scaled on the CPU\n",s->connector,s->mode.hdisplay,s->mode.vdisplay,s->rotation);
   const auris_output_backend_t backend={start,present,close_display};
   if (info) *info=(auris_display_info_t){s->mode.hdisplay,s->mode.vdisplay,s->rotation};
   return auris_output_open_backend(out,w,h,s,&backend);
