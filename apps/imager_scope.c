@@ -677,10 +677,11 @@ int main(int argc, char **argv) {
           visible ? "visible":"hidden");
       camera_chain_status_t seen;
       camera_chain_status(camera, &seen);
-      fprintf(stderr, "EXPOSURE %.1f ms, analogue x%.2f, digital x%.2f, software x%.2f | balance R %.2f B %.2f | level %.3f, %.1f %% at the limit\n",
+      fprintf(stderr, "EXPOSURE %.1f ms, analogue x%.2f, digital x%.2f, software x%.2f | balance R %.2f B %.2f | level %.3f, %.1f %% at the limit%s\n",
           (double)seen.exposure_ms, (double)seen.analogue, (double)seen.digital,
           (double)seen.software, (double)seen.balance_red, (double)seen.balance_blue,
-          (double)seen.mean, 100.0 * (double)seen.clipped);
+          (double)seen.mean, 100.0 * (double)seen.clipped,
+          seen.hardware ? " | image processor" : "");
       next_timing = composed + 1000000U;
     }
   }

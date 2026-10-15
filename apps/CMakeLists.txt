@@ -105,7 +105,7 @@ auris_enable_sanitizers(auris_imager_audio)
 
 add_library(auris_camera_chain STATIC camera_chain.c)
 target_include_directories(auris_camera_chain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(auris_camera_chain PUBLIC auris_camera auris_image)
+target_link_libraries(auris_camera_chain PUBLIC auris_camera auris_image auris_vpac)
 auris_set_warnings(auris_camera_chain)
 auris_enable_sanitizers(auris_camera_chain)
 
@@ -138,3 +138,17 @@ add_executable(eval_replay eval_replay.c)
 target_link_libraries(eval_replay PRIVATE auris_audio auris_imager_audio)
 auris_set_warnings(eval_replay)
 auris_enable_sanitizers(eval_replay)
+
+# Bring-up check for the image processor (needs root and TI's libraries).
+add_executable(vpac_probe vpac_probe.c)
+target_link_libraries(vpac_probe PRIVATE auris_camera auris_vpac)
+target_compile_definitions(vpac_probe PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(vpac_probe)
+auris_enable_sanitizers(vpac_probe)
+
+# One picture from the camera chain, to compare the two processing paths.
+add_executable(camera_snapshot camera_snapshot.c)
+target_link_libraries(camera_snapshot PRIVATE auris_camera_chain)
+target_compile_definitions(camera_snapshot PRIVATE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(camera_snapshot)
+auris_enable_sanitizers(camera_snapshot)

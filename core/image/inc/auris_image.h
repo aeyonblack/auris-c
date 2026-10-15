@@ -73,6 +73,10 @@ typedef struct {
 } auris_rgb24_t;
 
 int auris_image_open(auris_image_t **out, const auris_image_config_t *config);
+/* Where a source_width x source_height picture sits when fitted, keeping
+   its shape, into a width x height canvas: centred, the rest black. */
+int auris_image_fit(uint32_t source_width, uint32_t source_height,
+                    uint32_t width, uint32_t height, auris_image_rect_t *rect);
 /* Where the picture sits in the canvas; the rest is black. */
 const auris_image_rect_t *auris_image_content(const auris_image_t *image);
 int auris_image_stats(const auris_image_t *image, auris_image_stats_t *stats);

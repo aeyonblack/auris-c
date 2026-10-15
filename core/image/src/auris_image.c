@@ -178,17 +178,8 @@ int auris_image_open(auris_image_t **out, const auris_image_config_t *c) {
   s->width = c->width;
   s->height = c->height;
   s->bits = c->bits;
-  uint32_t w = c->width, h = c->height;
-  if ((uint64_t)c->width * s->sh <= (uint64_t)c->height * s->sw)
-    h = (uint32_t)(((uint64_t)c->width * s->sh + s->sw / 2U) / s->sw);
-  else
-    w = (uint32_t)(((uint64_t)c->height * s->sw + s->sh / 2U) / s->sh);
-  if (w == 0U)
-    w = 1U;
-  if (h == 0U)
-    h = 1U;
-  s->content =
-      (auris_image_rect_t){(c->width - w) / 2U, (c->height - h) / 2U, w, h};
+  (void)auris_image_fit(s->sw, s->sh, c->width, c->height, &s->content);
+  const uint32_t w = s->content.width, h = s->content.height;
   /* Samples are handled as the sum of two 10-bit ones: the two greens of a
      cell added, red and blue doubled. 8-bit samples are scaled up first. */
   const int32_t full = c->bits == 8U ? 255 * 4 : 1023;
@@ -239,6 +230,26 @@ int auris_image_open(auris_image_t **out, const auris_image_config_t *c) {
   memcpy(s->stats.gain, s->gain, sizeof(s->stats.gain));
   s->stats.exposure = s->exposure;
   *out = s;
+  return 0;
+}
+
+int auris_image_fit(uint32_t source_width, uint32_t source_height,
+                    uint32_t width, uint32_t height, auris_image_rect_t *rect) {
+  if (source_width == 0U || source_height == 0U || width == 0U ||
+      height == 0U || rect == NULL)
+    return -EINVAL;
+  uint32_t w = width, h = height;
+  if ((uint64_t)width * source_height <= (uint64_t)height * source_width)
+    h = (uint32_t)(((uint64_t)width * source_height + source_width / 2U) /
+                   source_width);
+  else
+    w = (uint32_t)(((uint64_t)height * source_width + source_height / 2U) /
+                   source_height);
+  if (w == 0U)
+    w = 1U;
+  if (h == 0U)
+    h = 1U;
+  *rect = (auris_image_rect_t){(width - w) / 2U, (height - h) / 2U, w, h};
   return 0;
 }
 

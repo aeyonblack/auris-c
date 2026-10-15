@@ -166,12 +166,13 @@ int main(int argc, char **argv) {
       fprintf(stderr,
               "EXPOSURE %.1f ms, analogue x%.2f, digital x%.2f, software "
               "x%.2f | balance R %.2f B %.2f | level %.3f, %.1f %% at the "
-              "limit%s\n",
+              "limit%s%s\n",
               (double)now.exposure_ms, (double)now.analogue,
               (double)now.digital, (double)now.software,
               (double)now.balance_red, (double)now.balance_blue,
               (double)now.mean, 100.0 * (double)now.clipped,
-              now.shading ? " | lens shading corrected" : "");
+              now.shading ? " | lens shading corrected" : "",
+              now.hardware ? " | image processor" : "");
     }
   }
   if (limit != 0U) {
