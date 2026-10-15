@@ -131,6 +131,12 @@ auris_enable_sanitizers(test_image)
 add_test(NAME image COMMAND test_image)
 set_tests_properties(image PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(test_nv12 test_nv12.c)
+target_link_libraries(test_nv12 PRIVATE auris_image)
+auris_set_warnings(test_nv12)
+auris_enable_sanitizers(test_nv12)
+add_test(NAME nv12 COMMAND test_nv12)
+
 add_executable(test_projection test_projection.c)
 if(EXISTS "${CMAKE_SOURCE_DIR}/core/inc/auris_projection.h" AND
    EXISTS "${CMAKE_SOURCE_DIR}/core/src/auris_projection.c")

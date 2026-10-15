@@ -48,6 +48,32 @@ int main(void) {
   CHECK(unlink(path) == 0);
   CHECK(camera_chain_load_shading(path, &columns, &rows, gains) == -ENOENT);
   CHECK(camera_chain_load_shading(NULL, &columns, &rows, gains) == -EINVAL);
+  /* The hardware picture's place on the canvas: the same fit as the
+     software one, but NV12 needs even sizes, so 1640 x 1232 in 640 x 360
+     is 480 x 360 (the software picture is 479 wide). */
+  auris_image_rect_t rect = {0};
+  CHECK(camera_chain_hardware_rect(1640U, 1232U, 640U, 360U, &rect) == 0);
+  CHECK(rect.x == 80U && rect.y == 0U && rect.width == 480U &&
+        rect.height == 360U);
+  CHECK(camera_chain_hardware_rect(1640U, 1232U, 1280U, 720U, &rect) == 0);
+  CHECK(rect.x == 161U && rect.y == 0U && rect.width == 958U &&
+        rect.height == 720U);
+  /* Odd canvas: an even picture still fits inside it. */
+  CHECK(camera_chain_hardware_rect(1640U, 1232U, 641U, 361U, &rect) == 0);
+  CHECK(rect.width % 2U == 0U && rect.height % 2U == 0U &&
+        rect.x + rect.width <= 641U && rect.y + rect.height <= 361U);
+  CHECK(camera_chain_hardware_rect(0U, 1232U, 640U, 360U, &rect) == -EINVAL);
+  CHECK(camera_chain_hardware_rect(1640U, 1232U, 1U, 360U, &rect) == -EINVAL);
+  CHECK(camera_chain_hardware_rect(1640U, 1232U, 640U, 360U, NULL) == -EINVAL);
+
+  /* Which processing to use: the chip's image processor unless asked for
+     the software one. */
+  CHECK(camera_chain_wants_hardware(NULL));
+  CHECK(camera_chain_wants_hardware(""));
+  CHECK(camera_chain_wants_hardware("0"));
+  CHECK(!camera_chain_wants_hardware("1"));
+  CHECK(!camera_chain_wants_hardware("yes"));
+
   /* The rest needs the camera; without one, nothing is left half open. */
   camera_chain_t *chain = NULL;
   CHECK(camera_chain_open(NULL, 640U, 360U, NULL) == -EINVAL);
