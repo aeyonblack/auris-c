@@ -339,3 +339,16 @@ target_compile_definitions(test_camera_chain PRIVATE _POSIX_C_SOURCE=200809L)
 auris_set_warnings(test_camera_chain)
 auris_enable_sanitizers(test_camera_chain)
 add_test(NAME camera_chain COMMAND test_camera_chain)
+
+# perf/power-budget: the sparse-lag GCC and the SRP map against a full-curve reference.
+add_executable(test_gcc_lags test_gcc_lags.c)
+target_link_libraries(test_gcc_lags PRIVATE auris_core)
+auris_set_warnings(test_gcc_lags)
+auris_enable_sanitizers(test_gcc_lags)
+add_test(NAME gcc_lags COMMAND test_gcc_lags)
+
+add_executable(test_srp_reference test_srp_reference.c)
+target_link_libraries(test_srp_reference PRIVATE auris_core auris_config)
+auris_set_warnings(test_srp_reference)
+auris_enable_sanitizers(test_srp_reference)
+add_test(NAME srp_reference COMMAND test_srp_reference)
