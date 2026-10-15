@@ -4,6 +4,9 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 struct auris_fft {
   size_t size, upsample;
@@ -12,6 +15,12 @@ struct auris_fft {
   fftwf_plan forward;
   fftwf_plan inverse;
   fftwf_plan fine_inverse;
+  /* auris_gcc_phat_lags: cos and sin of 2 pi k n / (size * upsample) for
+     lags n = -max_lag..max_lag (rows) and bins k = 0..size / 2 (columns),
+     plus room for one pair's weighted phasors. */
+  size_t max_lag, row;
+  float *cosine, *sine;
+  float *phasor_re, *phasor_im;
 };
 
 void auris_fft_destroy(auris_fft_t *fft) {
@@ -29,6 +38,10 @@ void auris_fft_destroy(auris_fft_t *fft) {
   }
   fftwf_free(fft->frequency);
   fftwf_free(fft->time);
+  free(fft->cosine);
+  free(fft->sine);
+  free(fft->phasor_re);
+  free(fft->phasor_im);
   free(fft);
 }
 
@@ -282,6 +295,151 @@ auris_status_t auris_gcc_phat_curve_band(auris_fft_t *fft,
   const size_t fine = fft->size * fft->upsample;
   for (size_t n = 0U; n < fine; ++n) {
     curve[n] = fft->time[n] / (float)fft->size;
+  }
+  return AURIS_OK;
+}
+
+auris_status_t auris_fft_reserve_lags(auris_fft_t *fft, size_t max_lag) {
+  if (fft == NULL || max_lag > fft->size * fft->upsample / 2U) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  if (fft->cosine != NULL && fft->max_lag >= max_lag) {
+    return AURIS_OK;
+  }
+  const size_t bins = fft->size / 2U + 1U;
+  /* Rows padded to a multiple of four floats for the vector loads. */
+  const size_t row = (bins + 3U) & ~(size_t)3U;
+  const size_t rows = 2U * max_lag + 1U;
+  float *cosine = calloc(rows * row, sizeof(float));
+  float *sine = calloc(rows * row, sizeof(float));
+  float *re = fft->phasor_re != NULL ? fft->phasor_re
+                                     : calloc(row, sizeof(float));
+  float *im = fft->phasor_im != NULL ? fft->phasor_im
+                                     : calloc(row, sizeof(float));
+  if (cosine == NULL || sine == NULL || re == NULL || im == NULL) {
+    free(cosine);
+    free(sine);
+    if (fft->phasor_re == NULL) {
+      free(re);
+    }
+    if (fft->phasor_im == NULL) {
+      free(im);
+    }
+    return AURIS_ERROR_INTERNAL;
+  }
+  const size_t fine = fft->size * fft->upsample;
+  for (size_t r = 0U; r < rows; ++r) {
+    const long lag = (long)r - (long)max_lag;
+    const size_t n = (size_t)(lag < 0 ? (long)fine + lag : lag);
+    for (size_t k = 0U; k < bins; ++k) {
+      /* k * n mod fine keeps the angle exact; fine is a power of two. */
+      const double angle =
+          6.283185307179586 * (double)((k * n) & (fine - 1U)) / (double)fine;
+      cosine[r * row + k] = (float)cos(angle);
+      sine[r * row + k] = (float)sin(angle);
+    }
+  }
+  free(fft->cosine);
+  free(fft->sine);
+  fft->cosine = cosine;
+  fft->sine = sine;
+  fft->phasor_re = re;
+  fft->phasor_im = im;
+  fft->max_lag = max_lag;
+  fft->row = row;
+  return AURIS_OK;
+}
+
+/* sum over k in [0, count) of re[k] * c[k] - im[k] * s[k], in float with
+   sixteen partial sums. */
+static float project(const float *re, const float *im, const float *c,
+                     const float *s, size_t count) {
+#if defined(__ARM_NEON)
+  float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0, a2 = a0, a3 = a0;
+  size_t k = 0U;
+  for (; k + 8U <= count; k += 8U) {
+    a0 = vfmaq_f32(a0, vld1q_f32(re + k), vld1q_f32(c + k));
+    a1 = vfmsq_f32(a1, vld1q_f32(im + k), vld1q_f32(s + k));
+    a2 = vfmaq_f32(a2, vld1q_f32(re + k + 4U), vld1q_f32(c + k + 4U));
+    a3 = vfmsq_f32(a3, vld1q_f32(im + k + 4U), vld1q_f32(s + k + 4U));
+  }
+  float sum = vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
+#else
+  float p[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  size_t k = 0U;
+  for (; k + 4U <= count; k += 4U) {
+    for (size_t j = 0U; j < 4U; ++j) {
+      p[j] += re[k + j] * c[k + j] - im[k + j] * s[k + j];
+    }
+  }
+  float sum = (p[0] + p[1]) + (p[2] + p[3]);
+#endif
+  for (; k < count; ++k) {
+    sum += re[k] * c[k] - im[k] * s[k];
+  }
+  return sum;
+}
+
+auris_status_t auris_gcc_phat_lags(auris_fft_t *fft, const auris_spectrum_t *s,
+                                   size_t a, size_t b, const float *gains,
+                                   size_t first_bin, size_t last_bin,
+                                   const int *lags, size_t lag_count,
+                                   float *values, bool *valid, float *weight) {
+  if (values == NULL || valid == NULL || weight == NULL || lags == NULL ||
+      lag_count == 0U || !pair_valid(fft, s, a, b) || first_bin > last_bin ||
+      last_bin > fft->size / 2U || fft->cosine == NULL) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  const long reach = (long)fft->max_lag;
+  for (size_t i = 0U; i < lag_count; ++i) {
+    if ((long)lags[i] < -reach || (long)lags[i] > reach) {
+      return AURIS_ERROR_INVALID_ARGUMENT;
+    }
+  }
+  /* The same weighted phasors (and weight) as prepare_phat, kept densely
+     between the first and last bins that carry any. */
+  const float epsilon = 1.0e-12f;
+  const size_t bins = fft->size / 2U + 1U;
+  float *re = fft->phasor_re, *im = fft->phasor_im;
+  size_t lowest = bins, highest = 0U;
+  bool any = false;
+  float total = 0.0f;
+  for (size_t k = first_bin < 1U ? 1U : first_bin;
+       k + 1U < bins && k <= last_bin; ++k) {
+    const float ar = s->bins[a][k][0];
+    const float ai = s->bins[a][k][1];
+    const float br = s->bins[b][k][0];
+    const float bi = s->bins[b][k][1];
+    const float real = br * ar + bi * ai;
+    const float imag = bi * ar - br * ai;
+    const float magnitude = hypotf(real, imag);
+    const float w = (s->weights == NULL ? 1.0f : s->weights[k]) *
+                    (gains == NULL ? 1.0f : gains[k]);
+    re[k] = w * real / (magnitude + epsilon);
+    im[k] = w * imag / (magnitude + epsilon);
+    if (magnitude > epsilon) {
+      any = true;
+      total += w;
+    }
+    if (re[k] != 0.0f || im[k] != 0.0f) {
+      lowest = k < lowest ? k : lowest;
+      highest = k;
+    }
+  }
+  *valid = any;
+  *weight = total;
+  /* y[n] = 2 sum_k Re(X[k] e^(2 pi i k n / fine)), the c2r inverse of a
+     spectrum that is zero at DC and Nyquist, divided by the frame length
+     like auris_gcc_phat_curve_band. */
+  const float scale = 2.0f / (float)fft->size;
+  for (size_t i = 0U; i < lag_count; ++i) {
+    float sum = 0.0f;
+    if (highest >= lowest) {
+      const size_t r = (size_t)((long)lags[i] + reach) * fft->row;
+      sum = project(re + lowest, im + lowest, fft->cosine + r + lowest,
+                    fft->sine + r + lowest, highest - lowest + 1U);
+    }
+    values[i] = sum * scale;
   }
   return AURIS_OK;
 }

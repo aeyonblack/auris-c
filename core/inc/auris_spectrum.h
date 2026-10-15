@@ -97,4 +97,20 @@ auris_status_t auris_gcc_phat_curve_band(auris_fft_t *fft,
                                          float *curve, bool *valid,
                                          float *weight);
 
+/* Prepares auris_gcc_phat_lags for fine lags -max_lag..max_lag (steps of
+   1 / upsample samples, max_lag <= size * upsample / 2): a table of
+   (2 max_lag + 1) x (size / 2 + 1) sines and cosines. Keeps a larger table
+   already made. */
+auris_status_t auris_fft_reserve_lags(auris_fft_t *fft, size_t max_lag);
+/* As auris_gcc_phat_curve_band, but only at the given fine lags, each within
+   the reserved range; values[i] is curve[lags[i] mod curve size] up to
+   rounding. It sums the band's bins directly, which costs far less than the
+   full inverse transform when only a few hundred lags are wanted. */
+auris_status_t auris_gcc_phat_lags(auris_fft_t *fft,
+                                   const auris_spectrum_t *spectrum, size_t a,
+                                   size_t b, const float *gains,
+                                   size_t first_bin, size_t last_bin,
+                                   const int *lags, size_t lag_count,
+                                   float *values, bool *valid, float *weight);
+
 #endif

@@ -8,8 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* A direction's lag for one pair: `index` counts from the pair's lowest
+   needed fine lag (lag_first), so the curve is read at index and index + 1. */
 typedef struct {
-  size_t index;
+  uint32_t index;
   float fraction;
 } lookup_t;
 
@@ -21,10 +23,18 @@ struct auris_srp {
   size_t columns, rows, step;
   auris_mic_pair_t pairs[AURIS_SRP_MAX_PAIRS];
   auris_vec3f_t directions[AURIS_SRP_MAX_DIRECTIONS];
-  lookup_t *table;
+  lookup_t *table; /* pair_count rows of count entries */
   size_t frame_size, frame_hop, upsample, curve_size;
-  float *curves;  /* pair_count rows of curve_size floats */
-  float *scratch; /* curve_size floats */
+  /* Each pair needs its curve only between its lowest and highest lag over
+     the grid (plus one): lag_count[p] fine lags from lag_first[p], listed in
+     lags[p * lag_span ..]. max_lag bounds them all. */
+  int lag_first[AURIS_SRP_MAX_PAIRS];
+  size_t lag_count[AURIS_SRP_MAX_PAIRS];
+  size_t lag_span, max_lag;
+  int *lags;
+  float *curves;  /* pair_count rows of lag_span floats */
+  float *scratch; /* lag_span floats */
+  float *sums;    /* count floats */
   float speed_of_sound_mps;
   float *gains; /* pair_count rows of frame_size / 2 + 1 bin gains, or NULL */
   /* Height band: `curves` then holds the bins below split_bin only. */
@@ -97,6 +107,8 @@ auris_status_t auris_srp_set_diffuse_rejection(auris_srp_t *s, float strength) {
 void auris_srp_destroy(auris_srp_t *state) {
   if (state != NULL) {
     free(state->table);
+    free(state->lags);
+    free(state->sums);
     free(state->curves);
     free(state->scratch);
     free(state->gains);
@@ -147,9 +159,10 @@ auris_srp_t *auris_srp_create_sized(const auris_array_t *array,
     return NULL;
   }
   s->table = calloc(count * s->pair_count, sizeof(*s->table));
-  s->curves = calloc(s->pair_count * s->curve_size, sizeof(*s->curves));
-  s->scratch = calloc(s->curve_size, sizeof(*s->scratch));
-  if (s->table == NULL || s->curves == NULL || s->scratch == NULL) {
+  s->sums = calloc(count, sizeof(*s->sums));
+  int *left_of = calloc(count, sizeof(*left_of));
+  if (s->table == NULL || s->sums == NULL || left_of == NULL) {
+    free(left_of);
     auris_srp_destroy(s);
     return NULL;
   }
@@ -165,14 +178,39 @@ auris_srp_t *auris_srp_create_sized(const auris_array_t *array,
     const auris_vec3f_t b = array->positions[s->pairs[p].second];
     const auris_vec3f_t baseline = {b.x_m - a.x_m, b.y_m - a.y_m,
                                     b.z_m - a.z_m};
+    int lowest = 0, highest = 0;
     for (size_t q = 0U; q < count; ++q) {
       const float lag = -scale * dot(baseline, directions[q]);
       const float fine = lag * (float)upsample;
       const int left = (int)floorf(fine);
-      lookup_t *entry = &s->table[q * s->pair_count + p];
-      entry->index =
-          (size_t)(left < 0 ? (int)s->curve_size + left : left);
-      entry->fraction = fine - (float)left;
+      left_of[q] = left;
+      s->table[p * count + q].fraction = fine - (float)left;
+      lowest = q == 0U || left < lowest ? left : lowest;
+      highest = q == 0U || left > highest ? left : highest;
+    }
+    for (size_t q = 0U; q < count; ++q) {
+      s->table[p * count + q].index = (uint32_t)(left_of[q] - lowest);
+    }
+    /* The interpolation also reads one lag past the highest. */
+    s->lag_first[p] = lowest;
+    s->lag_count[p] = (size_t)(highest - lowest) + 2U;
+    s->lag_span = s->lag_count[p] > s->lag_span ? s->lag_count[p] : s->lag_span;
+    const size_t reach_low = (size_t)(lowest < 0 ? -lowest : lowest);
+    const size_t reach_high = (size_t)(highest + 1 < 0 ? -(highest + 1) : highest + 1);
+    s->max_lag = reach_low > s->max_lag ? reach_low : s->max_lag;
+    s->max_lag = reach_high > s->max_lag ? reach_high : s->max_lag;
+  }
+  free(left_of);
+  s->lags = calloc(s->pair_count * s->lag_span, sizeof(*s->lags));
+  s->curves = calloc(s->pair_count * s->lag_span, sizeof(*s->curves));
+  s->scratch = calloc(s->lag_span, sizeof(*s->scratch));
+  if (s->lags == NULL || s->curves == NULL || s->scratch == NULL) {
+    auris_srp_destroy(s);
+    return NULL;
+  }
+  for (size_t p = 0U; p < s->pair_count; ++p) {
+    for (size_t j = 0U; j < s->lag_count[p]; ++j) {
+      s->lags[p * s->lag_span + j] = s->lag_first[p] + (int)j;
     }
   }
   return s;
@@ -186,14 +224,30 @@ auris_srp_t *auris_srp_create(const auris_array_t *array,
                                 directions, count);
 }
 
+static inline float lerp(const float *curve, lookup_t entry) {
+  const float a = curve[entry.index];
+  const float b = curve[entry.index + 1U];
+  return a + entry.fraction * (b - a);
+}
+
 static float pair_score(const auris_srp_t *s, const float *curves, size_t q,
                         size_t p) {
-  const lookup_t entry = s->table[q * s->pair_count + p];
-  const float *curve = &curves[p * s->curve_size];
-  const size_t next = (entry.index + 1U) % s->curve_size;
-  const float a = curve[entry.index];
-  const float b = curve[next];
-  return a + entry.fraction * (b - a);
+  return lerp(&curves[p * s->lag_span], s->table[p * s->count + q]);
+}
+
+/* sums[q] = sum over pairs, in pair order, of each pair's curve at cell q.
+   Pair by pair, so one pair's short curve and its row of the table are read
+   straight through. */
+static void sum_pairs(const auris_srp_t *s, const float *curves, float *sums) {
+  const size_t count = s->count;
+  memset(sums, 0, count * sizeof(*sums));
+  for (size_t p = 0U; p < s->pair_count; ++p) {
+    const float *curve = &curves[p * s->lag_span];
+    const lookup_t *row = &s->table[p * count];
+    for (size_t q = 0U; q < count; ++q) {
+      sums[q] += lerp(curve, row[q]);
+    }
+  }
 }
 
 auris_status_t auris_srp_set_grid(auris_srp_t *s,
@@ -234,7 +288,7 @@ auris_status_t auris_srp_set_height_band(auris_srp_t *s, float split_hz,
     return AURIS_ERROR_INVALID_ARGUMENT;
   }
   if (s->curves_high == NULL) {
-    s->curves_high = calloc(s->pair_count * s->curve_size, sizeof(float));
+    s->curves_high = calloc(s->pair_count * s->lag_span, sizeof(float));
     s->low = calloc(s->count, sizeof(float));
     s->high = calloc(s->count, sizeof(float));
     s->column_best = calloc(s->columns, sizeof(float));
@@ -284,14 +338,11 @@ static void scan_height(const auris_srp_t *s, auris_srp_result_t *out) {
   for (size_t x = 0U; x < columns; ++x) {
     s->column_best[x] = -INFINITY;
   }
+  sum_pairs(s, s->curves, s->low);
+  sum_pairs(s, s->curves_high, s->high);
   for (size_t q = 0U; q < s->count; ++q) {
-    float low = 0.0f, high = 0.0f;
-    for (size_t p = 0U; p < s->pair_count; ++p) {
-      low += pair_score(s, s->curves, q, p);
-      high += pair_score(s, s->curves_high, q, p);
-    }
-    s->low[q] = low / (float)s->pair_count;
-    s->high[q] = high / (float)s->pair_count;
+    s->low[q] /= (float)s->pair_count;
+    s->high[q] /= (float)s->pair_count;
     s->column_best[q % columns] =
         fmaxf(s->column_best[q % columns], s->low[q]);
   }
@@ -315,8 +366,15 @@ static void scan(const auris_srp_t *s, auris_srp_result_t *out) {
   }
   out->peak = -INFINITY;
   if (s->step <= 1U) {
+    sum_pairs(s, s->curves, s->sums);
     for (size_t q = 0U; q < s->count; ++q) {
-      evaluate(s, q, out);
+      const float score = s->sums[q] / (float)s->pair_count;
+      out->scores[q] = score;
+      ++out->evaluated;
+      if (score > out->peak || (score == out->peak && q < out->best)) {
+        out->peak = score;
+        out->best = q;
+      }
     }
     return;
   }
@@ -382,6 +440,10 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
   if (s->history_ready && spectrum->first_frame != s->next_frame) {
     auris_srp_reset(s);
   }
+  if (auris_fft_reserve_lags(fft, s->max_lag) != AURIS_OK) {
+    auris_srp_reset(s);
+    return AURIS_ERROR_INTERNAL;
+  }
   bool all_valid = true;
   float frame_weight = 0.0f, frame_high = 0.0f;
   const size_t last_bin = s->frame_size / 2U;
@@ -399,8 +461,9 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
       const size_t first = part == 0U ? 1U : s->split_bin;
       const size_t last = parts == 2U && part == 0U ? s->split_bin - 1U
                                                     : last_bin;
-      if (auris_gcc_phat_curve_band(fft, spectrum, a, b, gains, first, last,
-                                    s->scratch, &valid, &weight) != AURIS_OK) {
+      if (auris_gcc_phat_lags(fft, spectrum, a, b, gains, first, last,
+                              &s->lags[p * s->lag_span], s->lag_count[p],
+                              s->scratch, &valid, &weight) != AURIS_OK) {
         auris_srp_reset(s);
         return AURIS_ERROR_INTERNAL;
       }
@@ -409,9 +472,9 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
         frame_high += weight / (float)s->pair_count;
       }
       pair_valid = pair_valid || valid;
-      float *curve = part == 0U ? &s->curves[p * s->curve_size]
-                                : &s->curves_high[p * s->curve_size];
-      for (size_t n = 0U; n < s->curve_size; ++n) {
+      float *curve = part == 0U ? &s->curves[p * s->lag_span]
+                                : &s->curves_high[p * s->lag_span];
+      for (size_t n = 0U; n < s->lag_count[p]; ++n) {
         if (!s->history_ready || s->smoothing_alpha == 1.0f) {
           curve[n] = s->scratch[n];
         } else {
@@ -456,10 +519,8 @@ auris_status_t auris_srp_apply(auris_srp_t *s, auris_fft_t *fft,
         pair_score(s, s->curves, out->best, p) +
         (s->split_bin == 0U ? 0.0f
                             : pair_score(s, s->curves_high, out->best, p));
-    const lookup_t entry = s->table[out->best * s->pair_count + p];
-    const int left = entry.index >= s->curve_size / 2U
-                         ? (int)entry.index - (int)s->curve_size
-                         : (int)entry.index;
+    const lookup_t entry = s->table[p * s->count + out->best];
+    const int left = s->lag_first[p] + (int)entry.index;
     out->predicted_lags[p] =
         ((float)left + entry.fraction) / (float)s->upsample;
   }
