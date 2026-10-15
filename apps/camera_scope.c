@@ -1,5 +1,5 @@
-#include "camera_chain.h"
 #include "auris_outputs.h"
+#include "camera_chain.h"
 #include <errno.h>
 #include <linux/videodev2.h>
 #include <signal.h>
@@ -15,17 +15,20 @@ static void stop(int signal_number) {
 }
 
 int main(int argc, char **argv) {
-  auris_outputs_config_t outputs={0};
+  auris_outputs_config_t outputs = {0};
   unsigned long limit = 0U;
   unsigned long fps = 15U;
   bool limit_set = false;
   for (int i = 1; i < argc; ++i) {
-    int parsed=auris_outputs_option(&outputs,argc,argv,&i);
-    if (parsed<0) {
-      fprintf(stderr,"output options: --output stream|display (repeatable), --rotation 0|90|180|270, --drm-device PATH, --connector ID\n");
+    int parsed = auris_outputs_option(&outputs, argc, argv, &i);
+    if (parsed < 0) {
+      fprintf(stderr,
+              "output options: --output stream|display (repeatable), "
+              "--rotation 0|90|180|270, --drm-device PATH, --connector ID\n");
       return EXIT_FAILURE;
     }
-    if (parsed) continue;
+    if (parsed)
+      continue;
     const bool rate = strcmp(argv[i], "--fps") == 0;
     if ((rate && i + 1 >= argc) || (!rate && limit_set)) {
       fprintf(stderr, "usage: %s [--fps 1..30] [captured_frames]\n", argv[0]);
@@ -79,7 +82,7 @@ int main(int argc, char **argv) {
           f->width, f->height, f->bits, f->reported_stride, f->stride,
           f->sizeimage);
   err = auris_outputs_open(&output_stream, &outputs, STDOUT_FILENO,
-                            output.width, output.height);
+                           output.width, output.height);
   if (err < 0) {
     fprintf(stderr, "output open: %s\n", strerror(-err));
     goto done;
@@ -140,10 +143,9 @@ int main(int argc, char **argv) {
     ++frames;
     /* The output frontend copies RGB into a latest-frame mailbox. */
     if (send) {
-      const auris_output_frame_t metadata = {
-          .sequence = frame.sequence,
-          .camera_us = frame.timestamp_us,
-          .flags = frame.flags};
+      const auris_output_frame_t metadata = {.sequence = frame.sequence,
+                                             .camera_us = frame.timestamp_us,
+                                             .flags = frame.flags};
       err = auris_outputs_submit(output_stream, &output, &metadata);
       if (err < 0) {
         fprintf(stderr, "output submit: %s\n", strerror(-err));
@@ -185,11 +187,11 @@ done:
     auris_output_stats_t stats;
     auris_outputs_stats(output_stream, &stats);
     fprintf(stderr,
-            "primary output %lu fps: submitted %llu, sent %llu, replaced %llu, last payload %zu bytes\n",
-            fps,
-            (unsigned long long)stats.submitted,
-            (unsigned long long)stats.sent,
-            (unsigned long long)stats.dropped, stats.encoded_bytes);
+            "primary output %lu fps: submitted %llu, sent %llu, replaced %llu, "
+            "last payload %zu bytes\n",
+            fps, (unsigned long long)stats.submitted,
+            (unsigned long long)stats.sent, (unsigned long long)stats.dropped,
+            stats.encoded_bytes);
   }
   auris_outputs_close(output_stream);
   camera_chain_close(chain);

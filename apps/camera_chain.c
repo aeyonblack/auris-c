@@ -175,8 +175,8 @@ int camera_chain_start(camera_chain_t *s) {
       continue;
     if (got < 0)
       break; /* the caller's own first acquire reports it */
-    const auris_bayer_t raw = {frame.data, f->width, f->height, f->stride,
-                               frame.bytes, f->bits};
+    const auris_bayer_t raw = {frame.data, f->width,    f->height,
+                               f->stride,  frame.bytes, f->bits};
     if (auris_image_measure(s->image, &raw) == 0)
       steer(s, &frame);
     err = auris_camera_release(s->camera);
@@ -199,8 +199,8 @@ int camera_chain_render(camera_chain_t *s, const auris_camera_frame_t *frame,
   if (s == NULL || frame == NULL || canvas == NULL)
     return -EINVAL;
   const auris_camera_format_t *f = auris_camera_format(s->camera);
-  const auris_bayer_t raw = {frame->data, f->width, f->height, f->stride,
-                             frame->bytes, f->bits};
+  const auris_bayer_t raw = {frame->data, f->width,     f->height,
+                             f->stride,   frame->bytes, f->bits};
   const int err = auris_image_render(s->image, &raw, canvas);
   if (err == 0)
     steer(s, frame);
@@ -211,7 +211,8 @@ void camera_chain_status(const camera_chain_t *s, camera_chain_status_t *out) {
   if (s == NULL || out == NULL)
     return;
   *out = (camera_chain_status_t){.exposure_control = s->exposure_control,
-                                 .shading = s->shading, .software = 1.0f};
+                                 .shading = s->shading,
+                                 .software = 1.0f};
   auris_image_stats_t seen;
   if (auris_image_stats(s->image, &seen) == 0) {
     out->software = seen.exposure;

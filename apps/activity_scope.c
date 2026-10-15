@@ -28,13 +28,14 @@ static bool write_floats(const float *data, size_t count) {
 }
 
 static int usage(const char *program) {
-  fprintf(stderr,
-          "usage: %s [--array NAME] [--device D | --file REC.wav [--realtime]]\n"
-          "          [--frame N] [--hop H] [--band LO HI]\n"
-          "          [--open DB] [--close DB] [--minimum DBFS]"
-          " [--attack S] [--hold S]\n"
-          "  NAME: %s;  --band and --minimum default to the array's values\n",
-          program, auris_config_names());
+  fprintf(
+      stderr,
+      "usage: %s [--array NAME] [--device D | --file REC.wav [--realtime]]\n"
+      "          [--frame N] [--hop H] [--band LO HI]\n"
+      "          [--open DB] [--close DB] [--minimum DBFS]"
+      " [--attack S] [--hold S]\n"
+      "  NAME: %s;  --band and --minimum default to the array's values\n",
+      program, auris_config_names());
   return EXIT_FAILURE;
 }
 
@@ -64,15 +65,14 @@ static bool parse_real(const char *text, float *out) {
 static void pace(const struct timespec *start, uint64_t frames,
                  unsigned int rate) {
   const uint64_t ns = frames * 1000000000ULL / rate;
-  struct timespec due = {
-      .tv_sec = start->tv_sec + (time_t)(ns / 1000000000ULL),
-      .tv_nsec = start->tv_nsec + (long)(ns % 1000000000ULL)};
+  struct timespec due = {.tv_sec = start->tv_sec + (time_t)(ns / 1000000000ULL),
+                         .tv_nsec =
+                             start->tv_nsec + (long)(ns % 1000000000ULL)};
   if (due.tv_nsec >= 1000000000L) {
     due.tv_nsec -= 1000000000L;
     ++due.tv_sec;
   }
-  while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &due, NULL) ==
-         EINTR) {
+  while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &due, NULL) == EINTR) {
   }
 }
 
@@ -97,9 +97,11 @@ int main(int argc, char **argv) {
     } else if (strcmp(argv[i], "--realtime") == 0) {
       realtime = true;
     } else if (strcmp(argv[i], "--frame") == 0 && i + 1 < argc) {
-      if (!parse_size(argv[++i], &frame_size)) return usage(argv[0]);
+      if (!parse_size(argv[++i], &frame_size))
+        return usage(argv[0]);
     } else if (strcmp(argv[i], "--hop") == 0 && i + 1 < argc) {
-      if (!parse_size(argv[++i], &frame_hop)) return usage(argv[0]);
+      if (!parse_size(argv[++i], &frame_hop))
+        return usage(argv[0]);
     } else if (strcmp(argv[i], "--band") == 0 && i + 2 < argc) {
       if (!parse_real(argv[i + 1], &band[0]) ||
           !parse_real(argv[i + 2], &band[1])) {
@@ -108,18 +110,22 @@ int main(int argc, char **argv) {
       band_given = true;
       i += 2;
     } else if (strcmp(argv[i], "--open") == 0 && i + 1 < argc) {
-      if (!parse_real(argv[++i], &gate_config.open_db)) return usage(argv[0]);
+      if (!parse_real(argv[++i], &gate_config.open_db))
+        return usage(argv[0]);
     } else if (strcmp(argv[i], "--close") == 0 && i + 1 < argc) {
-      if (!parse_real(argv[++i], &gate_config.close_db)) return usage(argv[0]);
+      if (!parse_real(argv[++i], &gate_config.close_db))
+        return usage(argv[0]);
     } else if (strcmp(argv[i], "--minimum") == 0 && i + 1 < argc) {
       if (!parse_real(argv[++i], &gate_config.minimum_dbfs)) {
         return usage(argv[0]);
       }
       minimum_given = true;
     } else if (strcmp(argv[i], "--attack") == 0 && i + 1 < argc) {
-      if (!parse_real(argv[++i], &gate_config.attack_s)) return usage(argv[0]);
+      if (!parse_real(argv[++i], &gate_config.attack_s))
+        return usage(argv[0]);
     } else if (strcmp(argv[i], "--hold") == 0 && i + 1 < argc) {
-      if (!parse_real(argv[++i], &gate_config.hold_s)) return usage(argv[0]);
+      if (!parse_real(argv[++i], &gate_config.hold_s))
+        return usage(argv[0]);
     } else {
       return usage(argv[0]);
     }
@@ -137,7 +143,8 @@ int main(int argc, char **argv) {
   const auris_capture_profile_t *profile = config.capture;
   const unsigned int rate = profile->sample_rate;
   const size_t channels = array->microphone_count;
-  if (frame_size == 0U) frame_size = profile->frame_size;
+  if (frame_size == 0U)
+    frame_size = profile->frame_size;
   if (frame_hop == 0U) {
     frame_hop = frame_size == profile->frame_size ? profile->frame_hop
                                                   : frame_size / 2U;
@@ -179,7 +186,8 @@ int main(int argc, char **argv) {
   auris_wav_reader_t recording = {0};
   auris_audio_source_t source = {&state, auris_alsa_read};
   int result = EXIT_FAILURE;
-  if (fft == NULL || auris_framer_init(&framer, frame_size, frame_hop) != AURIS_OK ||
+  if (fft == NULL ||
+      auris_framer_init(&framer, frame_size, frame_hop) != AURIS_OK ||
       auris_preprocess_init_size(&prep, frame_size) != AURIS_OK) {
     fprintf(stderr, "DSP setup failed (check frame and hop)\n");
     goto done;
@@ -191,8 +199,9 @@ int main(int argc, char **argv) {
   if (auris_activity_init_sized(&gate_state, &gate_config, rate, channels,
                                 frame_size, frame_hop,
                                 window_energy) != AURIS_OK) {
-    fprintf(stderr, "gate setup failed: need 0 <= LO < HI <= %u Hz with a bin"
-                    " inside, CLOSE < OPEN, durations 0-60 s\n",
+    fprintf(stderr,
+            "gate setup failed: need 0 <= LO < HI <= %u Hz with a bin"
+            " inside, CLOSE < OPEN, durations 0-60 s\n",
             rate / 2U);
     goto done;
   }
@@ -211,9 +220,8 @@ int main(int argc, char **argv) {
   }
 
   if (file != NULL) {
-    const int err =
-        auris_wav_open(&recording, file, profile, array->capture_channels,
-                       channels);
+    const int err = auris_wav_open(&recording, file, profile,
+                                   array->capture_channels, channels);
     if (err < 0) {
       fprintf(stderr, "%s: %s\n", file,
               err == -EINVAL ? "recording does not match this array's device"
@@ -244,13 +252,14 @@ int main(int argc, char **argv) {
   fprintf(stderr, "keep quiet for the first second: the gate is calibrating\n");
 
   /* Header: rate, frame, hop, microphones, gate band, octave centres. */
-  if (printf("AURIS7 %u %zu %zu %zu %.9g %.9g %zu", rate, frame_size,
-             frame_hop, channels, (double)gate_config.low_hz,
-             (double)gate_config.high_hz, band_count) < 0) {
+  if (printf("AURIS7 %u %zu %zu %zu %.9g %.9g %zu", rate, frame_size, frame_hop,
+             channels, (double)gate_config.low_hz, (double)gate_config.high_hz,
+             band_count) < 0) {
     goto done;
   }
   for (size_t b = 0U; b < band_count; ++b) {
-    if (printf(" %.9g", (double)centres[b]) < 0) goto done;
+    if (printf(" %.9g", (double)centres[b]) < 0)
+      goto done;
   }
   if (putchar('\n') == EOF || fflush(stdout) == EOF) {
     goto done;
@@ -344,7 +353,8 @@ int main(int argc, char **argv) {
       goto done;
     }
     for (size_t m = 0U; m < channels; ++m) {
-      if (!write_floats(octave_db[m], band_count)) goto done;
+      if (!write_floats(octave_db[m], band_count))
+        goto done;
     }
     if (!write_floats(band_db, channels) || fflush(stdout) == EOF) {
       goto done;
