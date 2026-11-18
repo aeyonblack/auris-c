@@ -10,7 +10,8 @@ static const rect_t buttons[]={
   {20,64,192,44},{224,64,192,44},{428,64,192,44},
   {20,122,143,44},{172,122,143,44},{324,122,143,44},{476,122,143,44},
   {20,180,192,44},{224,180,192,44},{428,180,192,44},
-  {20,238,192,44},{224,238,192,44},{428,238,192,44}
+  {20,238,192,44},{224,238,192,44},{428,238,192,44},
+  {428,288,192,44}
 };
 static int hit(int x,int y) {
   for (size_t i=0U;i<sizeof(buttons)/sizeof(buttons[0]);++i) {
@@ -53,6 +54,7 @@ void auris_ui_touch(auris_ui_t *s,const auris_touch_event_t *e,uint64_t now) {
       if (!s->confirm_until || now>s->confirm_until) { s->confirm_until=now+3000000U; return; }
       *c=auris_settings_defaults(); s->confirm_until=0U; break;
     case 12: s->visible=false; return;
+    case 13: s->test_requested=true; return;
     default: return;
   }
   ++s->revision;
@@ -91,6 +93,12 @@ static void text(auris_rgb24_t *f,int x,int y,const char *str,unsigned int scale
         box(f,(rect_t){x+col*(int)scale,y+row*(int)scale,(int)scale,(int)scale},colour,255U);
   }
 }
+void auris_ui_fill(auris_rgb24_t *f,int x,int y,int w,int h,uint32_t rgb,unsigned int alpha) {
+  box(f,(rect_t){x,y,w,h},rgb,alpha);
+}
+void auris_ui_text(auris_rgb24_t *f,int x,int y,const char *str,unsigned int scale,uint32_t rgb) {
+  text(f,x,y,str,scale,rgb);
+}
 int auris_ui_draw(auris_ui_t *s,auris_rgb24_t *f,const auris_ui_status_t *status,uint64_t now) {
   if (!s || !f || !status || !f->data || f->width!=640U || f->height!=360U ||
       f->stride<1920U || f->bytes<1920U || (f->bytes-1920U)/f->stride<359U) return -EINVAL;
@@ -125,7 +133,8 @@ int auris_ui_draw(auris_ui_t *s,auris_rgb24_t *f,const auris_ui_status_t *status
       case 9U: strcpy(label,"30 FPS"); break;
       case 10U: strcpy(label,status->save_status==1 ? "SAVING":"SAVE"); break;
       case 11U: strcpy(label,s->confirm_until>now ? "CONFIRM RESET":"DEFAULTS"); break;
-      default: strcpy(label,"HIDE"); break;
+      case 12U: strcpy(label,"HIDE"); break;
+      default: strcpy(label,"TEST MODE"); break;
     }
     rect_t r=buttons[i];
     box(f,r,s->pressed==(int)i ? 0x267f9dU : on ? 0x176459U : 0x263d50U,255U);

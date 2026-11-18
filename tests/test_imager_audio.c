@@ -307,9 +307,72 @@ static int test_pipeline(void) {
   return EXIT_SUCCESS;
 }
 
+/* Recalibrating forgets a noise floor learned while the room was loud: from
+   then on the chain behaves exactly like one opened at that moment. */
+static int test_recalibrate(void) {
+  static imager_dsp_t fresh;
+  static auris_framer_t framer_b;
+  static auris_analysis_frame_t frame_b;
+  static auris_srp_result_t result_b;
+  imager_audio_plan_t plan;
+  const imager_audio_options_t options = {.array = "cmb", .step = 1U};
+  const auris_vec3f_t ray = {0.0f, 0.0f, 1.0f};
+  CHECK(imager_audio_plan(&options, &plan) == 0);
+  CHECK(imager_dsp_open(&dsp, &plan, grid, COLUMNS, ROWS, true, true) == 0);
+  CHECK(auris_framer_init(&framer, plan.frame_size, plan.frame_hop) == AURIS_OK);
+  result = (auris_srp_result_t){0};
+  auris_activity_result_t gate = {0}, gate_b = {0};
+  imager_view_t seen = {0}, seen_b = {0};
+  /* Start-up with a loud sound going on: the floor is learned far too high. */
+  uint64_t position = 0U;
+  const uint64_t loud_end = (uint64_t)plan.rate * 3U / 2U;
+  for (; position < loud_end; position += AURIS_AUDIO_FRAMES) {
+    source_block(&plan, ray, position, 0.0);
+    bool ready = false;
+    CHECK(auris_framer_push(&framer, &block, &frame, &ready) == AURIS_OK);
+    if (ready) CHECK(imager_dsp_process(&dsp, &frame, &gate, &result, &seen) == AURIS_OK);
+  }
+  const float loud_floor = gate.noise_dbfs;
+  CHECK(imager_dsp_recalibrate(NULL, true) == AURIS_ERROR_INVALID_ARGUMENT);
+  CHECK(imager_dsp_recalibrate(&dsp, true) == AURIS_OK);
+  result = (auris_srp_result_t){0};
+  CHECK(imager_dsp_open(&fresh, &plan, grid, COLUMNS, ROWS, true, true) == 0);
+  CHECK(auris_framer_init(&framer, plan.frame_size, plan.frame_hop) == AURIS_OK);
+  CHECK(auris_framer_init(&framer_b, plan.frame_size, plan.frame_hop) == AURIS_OK);
+  result_b = (auris_srp_result_t){0};
+  /* Quiet, then a source, seen by both chains. */
+  const uint64_t onset = position + (uint64_t)plan.rate * 12U / 10U;
+  const uint64_t end = position + (uint64_t)plan.rate * 2U;
+  size_t compared = 0U, shown = 0U;
+  for (; position < end; position += AURIS_AUDIO_FRAMES) {
+    source_block(&plan, ray, position, (double)onset / (double)plan.rate);
+    bool ready = false, ready_b = false;
+    CHECK(auris_framer_push(&framer, &block, &frame, &ready) == AURIS_OK);
+    CHECK(auris_framer_push(&framer_b, &block, &frame_b, &ready_b) == AURIS_OK);
+    CHECK(ready == ready_b);
+    if (!ready) continue;
+    CHECK(imager_dsp_process(&dsp, &frame, &gate, &result, &seen) == AURIS_OK);
+    CHECK(imager_dsp_process(&fresh, &frame_b, &gate_b, &result_b, &seen_b) == AURIS_OK);
+    CHECK(gate.noise_dbfs == gate_b.noise_dbfs && gate.ready == gate_b.ready &&
+          gate.active == gate_b.active && gate.weight_sum == gate_b.weight_sum);
+    CHECK(seen.valid == seen_b.valid && seen.fresh == seen_b.fresh &&
+          seen.strength == seen_b.strength);
+    if (seen.valid) {
+      CHECK(seen.best == seen_b.best && seen.column == seen_b.column &&
+            seen.row == seen_b.row);
+      ++shown;
+    }
+    ++compared;
+  }
+  CHECK(compared > 100U && shown > 0U);
+  CHECK(gate.noise_dbfs < loud_floor - 10.0f);
+  imager_dsp_close(&dsp);
+  imager_dsp_close(&fresh);
+  return EXIT_SUCCESS;
+}
 int main(void) {
   if (test_plans() != EXIT_SUCCESS || test_history_reach() != EXIT_SUCCESS ||
-      test_pipeline() != EXIT_SUCCESS) {
+      test_pipeline() != EXIT_SUCCESS || test_recalibrate() != EXIT_SUCCESS) {
     return EXIT_FAILURE;
   }
   puts("imager audio tests: ok");

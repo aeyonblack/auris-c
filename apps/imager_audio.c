@@ -187,6 +187,14 @@ auris_status_t imager_dsp_set_smoothing(imager_dsp_t *dsp, bool smoothing) {
       dsp->srp, smoothing && !dsp->plan.tracking ? 0.100f : 0.0f);
 }
 
+auris_status_t imager_dsp_recalibrate(imager_dsp_t *dsp, bool smoothing) {
+  if (dsp == NULL) {
+    return AURIS_ERROR_INVALID_ARGUMENT;
+  }
+  auris_activity_reset(&dsp->activity);
+  return imager_dsp_set_smoothing(dsp, smoothing);
+}
+
 /* The tracker's part of one frame: update, then describe what to draw. */
 static auris_status_t track_frame(imager_dsp_t *dsp, bool fresh,
                                   const auris_activity_result_t *gate,

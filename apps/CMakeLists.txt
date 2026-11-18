@@ -109,10 +109,18 @@ target_link_libraries(auris_camera_chain PUBLIC auris_camera auris_image auris_v
 auris_set_warnings(auris_camera_chain)
 auris_enable_sanitizers(auris_camera_chain)
 
+find_package(JPEG REQUIRED)
+add_library(auris_imager_clip STATIC imager_clip.c)
+target_include_directories(auris_imager_clip PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(auris_imager_clip PUBLIC auris_audio auris_image PRIVATE JPEG::JPEG Threads::Threads m)
+target_compile_definitions(auris_imager_clip PRIVATE _DEFAULT_SOURCE _POSIX_C_SOURCE=200809L)
+auris_set_warnings(auris_imager_clip)
+auris_enable_sanitizers(auris_imager_clip)
+
 add_executable(imager_scope imager_scope.c)
 target_link_libraries(imager_scope PRIVATE auris_audio auris_config auris_imager_audio
   auris_camera_chain
-  auris_camera auris_calibration_session auris_outputs auris_control Threads::Threads)
+  auris_camera auris_calibration_session auris_outputs auris_control auris_imager_clip Threads::Threads)
 target_compile_definitions(imager_scope PRIVATE _POSIX_C_SOURCE=200809L)
 auris_set_warnings(imager_scope)
 auris_enable_sanitizers(imager_scope)

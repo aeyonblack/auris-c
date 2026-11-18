@@ -1,6 +1,7 @@
 /build/
 /build-release/
 /build-fault/
+/results/
 /compile_commands.json
 *.o
 *.a

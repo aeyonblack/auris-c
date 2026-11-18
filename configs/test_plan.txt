@@ -1,0 +1,65 @@
+# The qualification tests, read by the imager's test mode.
+# Underscores show as spaces on screen. Angles are degrees right and up of the
+# picture's centre, and mark where the source should sit; "- -" marks nothing.
+#
+# clip WHERE TEST ID DISTANCE POSITION SOURCE DEVICE RIGHT UP SECONDS PICTURES
+
+location apartment
+location corridor
+location parking
+
+test 1 VIEW_AND_RANGE
+test 2 SOUND_TYPES
+test 3 0_DB_SNR
+test 4 RATE_AND_LATENCY
+test 5 REVERBERATION
+
+# R1: the view, at one distance. Aim the device to put the source in the ring.
+clip apartment 1 view_centre   2_M CENTRE   PINK STILL   0   0 11 yes
+clip apartment 1 view_left     2_M 30_LEFT  PINK STILL -30   0 11 yes
+clip apartment 1 view_right    2_M 30_RIGHT PINK STILL  30   0 11 yes
+clip apartment 1 view_up       2_M 20_UP    PINK STILL   0  20 11 yes
+clip apartment 1 view_down     2_M 20_DOWN  PINK STILL   0 -20 11 yes
+clip apartment 1 view_up_left  2_M L30_U20  PINK STILL -30  20 11 yes
+clip apartment 1 view_up_right 2_M R30_U20  PINK STILL  30  20 11 yes
+clip apartment 1 view_dn_left  2_M L30_D20  PINK STILL -30 -20 11 yes
+clip apartment 1 view_dn_right 2_M R30_D20  PINK STILL  30 -20 11 yes
+# R1: range.
+clip corridor 1 range_1m       1_M  CENTRE   PINK  STILL   0 0 11 yes
+clip corridor 1 range_2m       2_M  CENTRE   PINK  STILL   0 0 11 yes
+clip corridor 1 range_5m       5_M  CENTRE   PINK  STILL   0 0 11 yes
+clip corridor 1 range_10m      10_M CENTRE   PINK  STILL   0 0 11 yes
+clip corridor 1 range_10m_left 10_M 30_LEFT  PINK  STILL -30 0 11 yes
+clip corridor 1 range_10m_rght 10_M 30_RIGHT PINK  STILL  30 0 11 yes
+clip corridor 1 range_10m_vox  10_M CENTRE   VOICE STILL   0 0 11 yes
+# R1: hand-held, as the proposal's demonstration says.
+clip apartment 1 hand_centre 2_M CENTRE  PINK  IN_HAND  0 0 11 yes
+clip apartment 1 hand_voice  2_M 20_LEFT VOICE IN_HAND -20 0 11 yes
+
+# R2: sounds inside the 500 Hz to 3 kHz band.
+clip apartment 2 band_500  2_M R15_U10 BAND_500-1000  STILL 15 10 11 yes
+clip apartment 2 band_1000 2_M R15_U10 BAND_1000-2000 STILL 15 10 11 yes
+clip apartment 2 band_2000 2_M R15_U10 BAND_2000-3000 STILL 15 10 11 yes
+clip apartment 2 speech    2_M R15_U10 SPEECH         STILL 15 10 11 yes
+clip apartment 2 music     2_M R15_U10 MUSIC          STILL 15 10 11 yes
+clip apartment 2 claps     2_M R15_U10 CLAPS          STILL 15 10 11 yes
+
+# R3: the same positions in quiet and at 0 dB SNR. The noise speaker is out of
+# view. noise_only sets the level: it plays alone so its power can be measured.
+clip apartment 3 noise_only  2_M -        NOISE_ONLY     STILL   -  - 11 no
+clip apartment 3 quiet_c     2_M CENTRE   SPEECH         STILL   0  0 11 yes
+clip apartment 3 noise_c     2_M CENTRE   SPEECH+NOISE   STILL   0  0 11 yes
+clip apartment 3 quiet_left  2_M 20_LEFT  SPEECH         STILL -20  0 11 yes
+clip apartment 3 noise_left  2_M 20_LEFT  SPEECH+NOISE   STILL -20  0 11 yes
+clip apartment 3 quiet_right 2_M 20_RIGHT SPEECH         STILL  20  0 11 yes
+clip apartment 3 noise_right 2_M 20_RIGHT SPEECH+NOISE   STILL  20  0 11 yes
+
+# R4: log only, so that saving pictures does not touch the measurement.
+clip apartment 4 rate_30s 2_M CENTRE PINK     STILL 0 0 30 no
+clip apartment 4 latency  2_M CENTRE 20_CLAPS STILL 0 0 40 no
+
+# R5: fixed positions and the room's decay in each location.
+clip apartment,corridor,parking 5 room_centre 2_M CENTRE   SPEECH    STILL   0 0 11 yes
+clip apartment,corridor,parking 5 room_left   2_M 20_LEFT  SPEECH    STILL -20 0 11 yes
+clip apartment,corridor,parking 5 room_right  2_M 20_RIGHT SPEECH    STILL  20 0 11 yes
+clip apartment,corridor,parking 5 rt60        2_M CENTRE   PINK_STOP STILL   0 0 11 no

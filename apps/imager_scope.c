@@ -1,6 +1,7 @@
 #include "auris_alsa.h"
 #include "auris_camera.h"
 #include "auris_outputs.h"
+#include "auris_testmode.h"
 #include "auris_ui.h"
 #include "auris_wav.h"
 #include "auris_overlay.h"
@@ -9,6 +10,7 @@
 #include "camera_chain.h"
 #include "imager_audio.h"
 #include "imager_calibration.h"
+#include "imager_clip.h"
 #include <errno.h>
 #include <math.h>
 #include <fcntl.h>
@@ -19,6 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -52,6 +56,7 @@ typedef struct {
 typedef struct {
   pthread_mutex_t mutex;
   atomic_bool stop, failed;
+  atomic_bool recalibrate; /* the worker relearns the room at its next frame */
   snapshot_t history[IMAGER_HISTORY_MAX];
   size_t history_next, history_count, history_capacity;
   imager_dsp_t dsp; /* worker-owned after start */
@@ -61,6 +66,7 @@ typedef struct {
   auris_settings_t settings; /* Protected by mutex; DSP objects stay worker-owned. */
   auris_ui_status_t status;
   bool smoothing_applied;
+  imager_clip_t *clip; /* set before the worker starts; records only in test mode */
 } audio_t;
 
 static void *audio_worker(void *context) {
@@ -138,6 +144,12 @@ static void *audio_worker(void *context) {
       if (source.read(source.context, &block) != AURIS_OK) break;
     }
     last_audio = now_us();
+    if (a->clip) {
+      size_t raw_bytes = 0U;
+      imager_clip_audio(a->clip, replay ? (const void *)recording.raw
+                                        : auris_alsa_raw(&capture, &raw_bytes),
+                        block.frames, block.first_frame);
+    }
     bool ready;
     if (auris_framer_push(&framer, &block, &analysis, &ready) != AURIS_OK) break;
     err = 0;
@@ -158,6 +170,15 @@ static void *audio_worker(void *context) {
       result.valid=false;
       (void)pthread_mutex_lock(&a->mutex);
       a->history_count=0U; a->history_next=0U;
+      (void)pthread_mutex_unlock(&a->mutex);
+    }
+    if (atomic_exchange(&a->recalibrate, false)) {
+      if (imager_dsp_recalibrate(&a->dsp, a->smoothing_applied) != AURIS_OK) {
+        err = -EINVAL; break;
+      }
+      result.valid = false;
+      (void)pthread_mutex_lock(&a->mutex);
+      a->history_count = 0U; a->history_next = 0U;
       (void)pthread_mutex_unlock(&a->mutex);
     }
     /* Estimate the analysis-centre time using the capture delay after read.
@@ -208,6 +229,19 @@ static void *audio_worker(void *context) {
     imager_calibration_feed(&a->collection, a->directions[view.best], centre_us,
                             next.published_us, usable);
     (void)pthread_mutex_unlock(&a->mutex);
+    if (a->clip) {
+      const auris_vec3f_t way = a->directions[view.best];
+      const imager_clip_row_t logged = {
+          .centre_us = centre_us, .published_us = next.published_us,
+          .first_frame = analysis.first_frame, .level_dbfs = gate.level_dbfs,
+          .noise_dbfs = gate.noise_dbfs, .weight_sum = gate.weight_sum,
+          .column = view.column, .row = view.row, .x = way.x_m, .y = way.y_m, .z = way.z_m,
+          .strength = view.strength, .confidence = view.confidence,
+          .contrast = next.evidence ? result.contrast : 0.0f,
+          .dsp_us = (uint32_t)next.dsp_us, .ready = gate.ready, .active = gate.active,
+          .evidence = gate.evidence, .valid = view.valid, .fresh = view.fresh};
+      imager_clip_row(a->clip, &logged);
+    }
     if (next.published_us >= next_report) {
       fprintf(stderr, "audio %.1f dBFS (noise %.1f, %.1f bins) | %s | %s\n",
               (double)gate.level_dbfs, (double)gate.noise_dbfs,
@@ -289,14 +323,158 @@ static int controls(imager_calibration_t *session, audio_t *audio) {
   return 0;
 }
 
-typedef struct { auris_ui_t *ui; auris_display_info_t display; } touch_context_t;
+typedef struct { auris_ui_t *ui; auris_testmode_t *test; auris_display_info_t display; } touch_context_t;
 static void touch_event(void *context,const auris_touch_event_t *event) {
   touch_context_t *c=context;
   auris_touch_event_t mapped=*event;
   if (!auris_touch_project(event->x,event->y,65535,65535,c->display.width,
       c->display.height,640U,360U,c->display.rotation,&mapped.x,&mapped.y))
     mapped.kind=AURIS_TOUCH_CANCEL;
-  auris_ui_touch(c->ui,&mapped,now_us());
+  if (c->test && c->test->phase!=AURIS_TESTMODE_OFF) auris_testmode_touch(c->test,&mapped,now_us());
+  else auris_ui_touch(c->ui,&mapped,now_us());
+}
+
+/* Test mode (the qualification clips). The screens are auris_testmode; this
+   carries out what they ask for. */
+typedef struct {
+  auris_testplan_t plan;
+  auris_testmode_t mode;
+  imager_clip_t *clip;
+  const char *plan_path, *results;
+  char final[256], part[272];
+  char commit[16];
+  uint8_t *held;       /* the picture the review shows */
+  bool have_held, hold_next, save_failed;
+  uint64_t next_picture;
+  const char *array;
+  float pan_deg, tilt_deg, diffuse;
+  auris_settings_t settings;
+  atomic_bool *recalibrate;
+} test_t;
+
+#define TEST_PICTURE_PERIOD_US 200000U
+
+static unsigned int test_free_mb(const test_t *t) {
+  (void)mkdir(t->results, 0755);
+  struct statvfs seen;
+  if (statvfs(t->results, &seen) != 0) return 0U;
+  return (unsigned int)((uint64_t)seen.f_bavail * seen.f_frsize / (1024U * 1024U));
+}
+
+/* A folder with meta.json is a finished clip, so a power cut loses only the
+   clip being recorded. */
+static void test_find_finished(test_t *t) {
+  for (size_t l = 0U; l < t->plan.location_count; ++l)
+    for (size_t c = 0U; c < t->plan.clip_count; ++c) {
+      char folder[256], meta[300];
+      t->mode.done[l][c] = false;
+      if (auris_testplan_clip_dir(&t->plan, l, c, t->results, folder, sizeof(folder)) != 0)
+        continue;
+      (void)snprintf(meta, sizeof(meta), "%s/meta.json", folder);
+      t->mode.done[l][c] = access(meta, F_OK) == 0;
+    }
+}
+
+/* The commit the tree was on, read directly: root's git refuses this repository. */
+static void test_read_commit(test_t *t) {
+  char line[160] = "", path[200];
+  (void)snprintf(t->commit, sizeof(t->commit), "unknown");
+  FILE *f = fopen(".git/HEAD", "r");
+  if (!f) return;
+  const bool read = fgets(line, sizeof(line), f) != NULL;
+  (void)fclose(f);
+  if (!read) return;
+  line[strcspn(line, "\n")] = '\0';
+  if (strncmp(line, "ref: ", 5U) == 0) {
+    (void)snprintf(path, sizeof(path), ".git/%s", line + 5);
+    f = fopen(path, "r");
+    if (!f) return;
+    const bool found = fgets(line, sizeof(line), f) != NULL;
+    (void)fclose(f);
+    if (!found) return;
+  }
+  (void)snprintf(t->commit, sizeof(t->commit), "%.12s", line);
+}
+
+static void test_begin(test_t *t) {
+  auris_testmode_t *m = &t->mode;
+  const auris_testplan_clip_t *c = auris_testmode_clip(m);
+  if (auris_testplan_clip_dir(&t->plan, m->location, m->clip, t->results, t->final,
+                              sizeof(t->final)) != 0) {
+    auris_testmode_fail(m, "THE FOLDER NAME IS TOO LONG");
+    return;
+  }
+  (void)snprintf(t->part, sizeof(t->part), "%s.part", t->final);
+  /* Left by a power cut while saving. */
+  (void)imager_clip_set_aside(t->part, "stale");
+  char meta[1024];
+  (void)snprintf(meta, sizeof(meta),
+      "  \"location\": \"%s\",\n  \"test\": %u,\n  \"id\": \"%s\",\n"
+      "  \"distance\": \"%s\",\n  \"position\": \"%s\",\n  \"source\": \"%s\",\n"
+      "  \"device\": \"%s\",\n  \"has_target\": %s,\n  \"target_right_deg\": %.1f,\n"
+      "  \"target_up_deg\": %.1f,\n  \"quiet_s\": %.1f,\n  \"source_s\": %.1f,\n"
+      "  \"commit\": \"%s\",\n  \"array\": \"%s\",\n  \"pan_deg\": %.1f,\n  \"tilt_deg\": %.1f,\n"
+      "  \"diffuse\": %.2f,\n  \"gating\": %s,\n  \"smoothing\": %s,\n  \"fps_setting\": %u,\n"
+      "  \"gate_recalibrated_at_start\": true",
+      t->plan.locations[m->location], c->test, c->id, c->distance, c->position, c->source,
+      c->device, c->has_target ? "true" : "false", (double)c->right_deg, (double)c->up_deg,
+      (double)AURIS_TESTMODE_QUIET_S, (double)c->seconds, t->commit, t->array,
+      (double)t->pan_deg, (double)t->tilt_deg, (double)t->diffuse,
+      t->settings.gating ? "true" : "false", t->settings.smoothing ? "true" : "false",
+      t->settings.fps);
+  /* Every clip learns its own noise floor from the start of its quiet part,
+     as a replay of its audio.wav does, not from whatever was going on when
+     the imager started. Asked for first, so it covers the whole recording. */
+  atomic_store(t->recalibrate, true);
+  const int begun = imager_clip_begin(t->clip, t->part, meta,
+      (double)AURIS_TESTMODE_QUIET_S + (double)c->seconds + 2.0, c->pictures);
+  if (begun < 0) {
+    fprintf(stderr, "test mode: %s\n", strerror(-begun));
+    auris_testmode_fail(&t->mode, "THE RECORDING COULD NOT START");
+    return;
+  }
+  t->next_picture = 0U;
+  t->have_held = false;
+  t->hold_next = false;
+}
+
+static void test_step(test_t *t, uint64_t now) {
+  auris_testmode_t *m = &t->mode;
+  for (;;) {
+    const auris_testmode_action_t action = auris_testmode_take(m, now);
+    if (action == AURIS_TESTMODE_ACT_NONE) break;
+    switch (action) {
+      case AURIS_TESTMODE_ACT_BEGIN: test_begin(t); break;
+      case AURIS_TESTMODE_ACT_SOURCE: imager_clip_source(t->clip, now); break;
+      case AURIS_TESTMODE_ACT_END:
+        t->hold_next = true;
+        if (imager_clip_end(t->clip) < 0) auris_testmode_fail(m, "THE RECORDING WAS LOST");
+        break;
+      case AURIS_TESTMODE_ACT_CANCEL: imager_clip_cancel(t->clip); break;
+      case AURIS_TESTMODE_ACT_KEEP:
+        if (rename(t->part, t->final) != 0) {
+          fprintf(stderr, "test mode: %s: %s\n", t->final, strerror(errno));
+          auris_testmode_fail(m, "THE CLIP COULD NOT BE KEPT");
+        } else auris_testmode_kept(m, test_free_mb(t));
+        break;
+      case AURIS_TESTMODE_ACT_REDO:
+        /* Kept to one side: it may be a real result of the system failing. */
+        (void)imager_clip_set_aside(t->part, "redo");
+        break;
+      default: break;
+    }
+  }
+  if (m->phase == AURIS_TESTMODE_SAVING) {
+    imager_clip_summary_t s;
+    const int saved = imager_clip_poll(t->clip, &s);
+    if (saved != 1) {
+      if (saved < 0) fprintf(stderr, "test mode: saving: %s\n", strerror(-saved));
+      auris_testmode_saved(m, &(auris_testmode_review_t){
+          .shown_pct = s.shown_pct, .source_dbfs = s.source_dbfs, .quiet_dbfs = s.quiet_dbfs,
+          .video_fps = s.video_fps, .lost_frames = s.lost_frames, .replaced = s.replaced,
+          .failed = saved < 0});
+    }
+  }
 }
 
 int main(int argc, char **argv) {
@@ -304,6 +482,7 @@ int main(int argc, char **argv) {
   bool calibrating = false;
   bool no_ui=false, fps_override=false;
   const char *settings_path="configs/runtime_settings.txt", *touch_path=NULL;
+  const char *test_plan_path="configs/test_plan.txt", *results_path="results";
   unsigned long fps = 15U;
   const char *calibration_path = "configs/camera_calibration.txt";
   imager_audio_options_t audio_options = {.array = "respeaker", .step = 1U};
@@ -321,6 +500,8 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[i], "--no-ui") == 0) no_ui=true;
     else if (strcmp(argv[i], "--settings") == 0 && i+1<argc) settings_path=argv[++i];
     else if (strcmp(argv[i], "--touch-device") == 0 && i+1<argc) touch_path=argv[++i];
+    else if (strcmp(argv[i], "--test-plan") == 0 && i+1<argc) test_plan_path=argv[++i];
+    else if (strcmp(argv[i], "--results") == 0 && i+1<argc) results_path=argv[++i];
     else if (strcmp(argv[i], "--calibration") == 0 && i + 1 < argc)
       calibration_path = argv[++i];
     else if (strcmp(argv[i], "--fps") == 0 && i + 1 < argc) {
@@ -389,6 +570,7 @@ int main(int argc, char **argv) {
   }
   if (usage_error) {
     fprintf(stderr,"runtime: [--settings FILE] [--no-ui] [--touch-device PATH]; touch UI defaults on with display, off during calibration\n");
+    fprintf(stderr,"test mode: [--test-plan FILE] [--results DIR]; opened from the touch panel\n");
     fprintf(stderr, "usage: %s [--calibrate] [--calibration FILE] [--fps 1..30]\n"
                     "          [--array NAME] [--device D] [--band LO HI] [--step 1|2|4]"
                     " [--no-track] [--diffuse 0..1]\n"
@@ -434,11 +616,13 @@ int main(int argc, char **argv) {
   audio.audio_file = audio_file;
   atomic_init(&audio.stop, false);
   atomic_init(&audio.failed, false);
+  atomic_init(&audio.recalibrate, false);
   camera_chain_t *camera = NULL;
   auris_outputs_t *output_stream = NULL;
   auris_touch_t *touch=NULL;
   auris_settings_writer_t *writer=NULL;
   touch_context_t touch_context={.ui=&ui};
+  static test_t test;
   bool ui_enabled=false,save_busy=false;
   unsigned int saved_revision=0U;
   imager_calibration_t session = {.path = calibration_path};
@@ -518,6 +702,27 @@ int main(int argc, char **argv) {
       if (opened<0) fprintf(stderr,"settings writer unavailable: %s\n",strerror(-opened));
     }
   }
+  if (ui_enabled) {
+    size_t bad_line=0U;
+    int prepared=auris_testplan_load(test_plan_path,&test.plan,&bad_line);
+    if (prepared==-EINVAL) fprintf(stderr,"test mode off: %s line %zu is not valid\n",test_plan_path,bad_line);
+    else if (prepared<0) fprintf(stderr,"test mode off: %s: %s\n",test_plan_path,strerror(-prepared));
+    else {
+      const auris_testmode_layout_t where={camera_view.fx,camera_view.fy,camera_view.cx,camera_view.cy,
+          (float)camera_view.width,(float)camera_view.height,(int)rect->x,(int)rect->y,
+          (int)rect->width,(int)rect->height};
+      auris_testmode_init(&test.mode,&test.plan,&where);
+      test.results=results_path; test.plan_path=test_plan_path;
+      test.array=plan.config.array->name; test.pan_deg=pan_deg; test.tilt_deg=tilt_deg;
+      test.diffuse=plan.diffuse;
+      test.recalibrate=&audio.recalibrate;
+      test_read_commit(&test);
+      test.held=malloc(bytes);
+      prepared=test.held ? imager_clip_open(&test.clip,plan.config.capture,rect->width,rect->height) : -ENOMEM;
+      if (prepared<0) fprintf(stderr,"test mode off: %s\n",strerror(-prepared));
+      else { audio.clip=test.clip; touch_context.test=&test.mode; }
+    }
+  }
   err = camera_chain_start(camera);
   if (err < 0) goto done;
   /* Worker inherits blocked termination signals. Main owns the signal flag. */
@@ -576,6 +781,17 @@ int main(int argc, char **argv) {
       if (!saved) { save_busy=true; saved_revision=ui.revision; }
       else fprintf(stderr,"settings save: %s\n",strerror(-saved));
     }
+    if (ui.test_requested) {
+      ui.test_requested=false;
+      if (test.clip) { test_find_finished(&test); auris_testmode_open(&test.mode,test_free_mb(&test)); }
+      else fprintf(stderr,"test mode is not available\n");
+    }
+    const bool test_was_open=test.clip && test.mode.phase!=AURIS_TESTMODE_OFF;
+    if (test_was_open) {
+      test.settings=settings;
+      test_step(&test,now_us());
+      if (test.mode.phase==AURIS_TESTMODE_OFF) { ui.visible=false; ui.last_touch=now_us(); }
+    }
     if (calibrating) {
       err = controls(&session, &audio);
       if (err < 0) goto done;
@@ -618,11 +834,30 @@ int main(int argc, char **argv) {
         (frame.timestamp_us > latest.sample_us ? frame.timestamp_us - latest.sample_us
                                                : latest.sample_us - frame.timestamp_us);
     const bool visible = latest.valid && settings.overlay;
+    const bool test_open = test.clip && test.mode.phase != AURIS_TESTMODE_OFF;
+    const bool recording = test_open && auris_testmode_recording(&test.mode);
+    int32_t picture = -1;
+    if (recording && composed >= test.next_picture) {
+      picture = imager_clip_next_picture(test.clip);
+      if (picture >= 0) {
+        (void)imager_clip_picture(test.clip, &canvas, rect->x, rect->y, picture, false);
+        test.next_picture = composed + TEST_PICTURE_PERIOD_US;
+      }
+    }
     err = auris_overlay_draw(session.overlay, latest.scores, DIRECTIONS,
                               visible ? latest.column : 0.0f,
                               visible ? latest.row : 0.0f,
                               visible ? latest.strength : 0.0f, &canvas);
     if (err < 0) goto done;
+    if (picture >= 0)
+      (void)imager_clip_picture(test.clip, &canvas, rect->x, rect->y, picture, true);
+    if (test_open && test.hold_next) {
+      memcpy(test.held, canvas.data, bytes);
+      test.hold_next = false; test.have_held = true;
+    }
+    if (test_open && test.have_held && (test.mode.phase == AURIS_TESTMODE_SAVING ||
+                                        test.mode.phase == AURIS_TESTMODE_REVIEW))
+      memcpy(canvas.data, test.held, bytes);
     ++fps_frames;
     if (composed-fps_start>=1000000U) {
       measured_fps=(float)((double)fps_frames*1000000.0/(double)(composed-fps_start));
@@ -637,7 +872,10 @@ int main(int argc, char **argv) {
       auris_outputs_stats(output_stream,&stats);
       status.fps=measured_fps; status.dropped=stats.dropped;
       status.save_status=auris_settings_save_status(writer);
-      err=auris_ui_draw(&ui,&canvas,&status,composed);
+      if (test_open) {
+        const auris_testmode_live_t live={status.dbfs,visible};
+        err=auris_testmode_draw(&test.mode,&canvas,&live,composed);
+      } else err=auris_ui_draw(&ui,&canvas,&status,composed);
       if (err<0) goto done;
     }
     uint32_t samples = 0U;
@@ -655,6 +893,16 @@ int main(int argc, char **argv) {
         .dsp_us = latest.dsp_us};
     err = auris_outputs_submit(output_stream, &canvas, &metadata);
     if (err < 0) goto done;
+    if (recording) {
+      auris_output_stats_t sent;
+      auris_outputs_stats(output_stream, &sent);
+      const imager_clip_frame_t logged = {
+          .sequence = frame.sequence, .camera_us = frame.timestamp_us,
+          .audio_us = latest.sample_us, .composed_us = composed,
+          .replaced = sent.dropped, .strength = visible ? latest.strength : 0.0f,
+          .visible = visible, .picture = picture};
+      imager_clip_frame(test.clip, &logged);
+    }
     if (next_output == 0U)
       next_output = received;
     do {
@@ -704,6 +952,8 @@ done:
   }
   auris_outputs_close(output_stream);
   auris_touch_close(touch);
+  imager_clip_close(test.clip);
+  free(test.held);
   auris_settings_writer_close(writer);
   camera_chain_close(camera);
   auris_overlay_close(session.overlay);

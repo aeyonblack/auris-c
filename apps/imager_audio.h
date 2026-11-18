@@ -120,6 +120,9 @@ auris_status_t imager_dsp_process(imager_dsp_t *dsp,
 /* Turns smoothing (the tracker, when the plan has one) on or off and
    forgets what was accumulated. */
 auris_status_t imager_dsp_set_smoothing(imager_dsp_t *dsp, bool smoothing);
+/* Forgets the room and the source, as if the chain had just been opened: the
+   gate learns its noise floor again from the frames that follow. */
+auris_status_t imager_dsp_recalibrate(imager_dsp_t *dsp, bool smoothing);
 void imager_dsp_close(imager_dsp_t *dsp);
 
 #endif
